@@ -1,0 +1,92 @@
+/** @copyright (C) 2016-2017,  Gavin J Stark.  All rights reserved.
+ *
+ * @copyright
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *     http://www.apache.org/licenses/LICENSE-2.0.
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ *
+ * @file   riscv_i32_trace.cdl
+ * @brief  Instruction trace for RISC-V implementation
+ *
+ * CDL implementation of RISC-V instruction trace based on the RISC-V
+ * specification v2.1.
+ *
+ */
+
+/*a Includes
+ */
+include "cpu/riscv/riscv_internal_types.h"
+include "cpu/riscv/riscv.h"
+
+/*a Types
+ */
+/*t t_trace_state */
+typedef struct {
+    bit enabled;
+    bit pc_required;
+    bit[3] data_nybble "Nybble at which data nybbles will start in compressed stream, if required";
+    t_riscv_i32_compressed_trace compressed;
+} t_trace_state;
+
+/*t t_trace_combs */
+typedef struct {
+    bit[3] current_seq;
+    bit[3] next_seq;
+    bit    next_seq_valid;
+    bit    next_nonseq_valid;
+    bit    next_bkpt_valid;
+    bit    next_data_valid;
+} t_trace_combs;
+
+/*a Module
+ */
+module riscv_i32_trace_compression( input t_riscv_i32_packed_trace  packed_trace "Packed trace",
+                                    output t_riscv_i32_compressed_trace compressed_trace "Compressed trace"
+)
+"""
+Compression of a packed trace
+"""
+{
+
+    /*b Compressed trace out */
+    compressed_trace_out """
+    Present the state - note bytes_valid may already be combinatorial from the state
+    """: {
+        compressed_trace = {*=0};
+        compressed_trace.valid = bundle(2b0, packed_trace.compressed_data_nybble);
+        if (packed_trace.data_valid) {
+            compressed_trace.valid = compressed_trace.valid + 5h4 + bundle(packed_trace.compressed_data_num_bytes,1b0);
+        }
+
+        full_switch (bundle(packed_trace.bkpt_valid,
+                       packed_trace.nonseq_valid,
+                       packed_trace.seq_valid) ) {
+        case 3b000: { compressed_trace.data = 0; }
+        case 3b001: { compressed_trace.data = bundle(60b0, 1b0, packed_trace.seq); }
+        case 3b010: { compressed_trace.data = bundle(60b0, 2b10, packed_trace.nonseq); }
+        case 3b011: { compressed_trace.data = bundle(56b0, 2b10, packed_trace.nonseq, 1b0, packed_trace.seq); }
+        case 3b100: { compressed_trace.data = bundle(56b0, packed_trace.bkpt, 4b1101); }
+        case 3b110: { compressed_trace.data = bundle(52b0, packed_trace.bkpt, 4b1101, 2b10, packed_trace.nonseq); }
+        case 3b111: { compressed_trace.data = bundle(48b0, packed_trace.bkpt, 4b1101, 2b10, packed_trace.nonseq, 1b0, packed_trace.seq); }
+        case 3b101: { compressed_trace.data = bundle(52b0, packed_trace.bkpt, 4b1101, 1b0, packed_trace.seq); }
+        }
+        if (packed_trace.data_valid) {
+            full_switch (packed_trace.compressed_data_nybble) {
+            case  0: { compressed_trace.data |= bundle(16b0, packed_trace.data[40; 0], packed_trace.data_reason, packed_trace.compressed_data_num_bytes[3;0], 4b1110); }
+            case  1: { compressed_trace.data |= bundle(12b0, packed_trace.data[40; 0], packed_trace.data_reason, packed_trace.compressed_data_num_bytes[3;0], 4b1110,  4b0); }
+            case  2: { compressed_trace.data |= bundle( 8b0, packed_trace.data[40; 0], packed_trace.data_reason, packed_trace.compressed_data_num_bytes[3;0], 4b1110,  8b0); }
+            case  3: { compressed_trace.data |= bundle( 4b0, packed_trace.data[40; 0], packed_trace.data_reason, packed_trace.compressed_data_num_bytes[3;0], 4b1110, 12b0); }
+            case  4: { compressed_trace.data |= bundle(      packed_trace.data[40; 0], packed_trace.data_reason, packed_trace.compressed_data_num_bytes[3;0], 4b1110, 16b0); }
+            }
+        }
+
+    }
+    
+    /*b All done */
+}

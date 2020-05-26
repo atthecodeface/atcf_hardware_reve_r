@@ -1,0 +1,236 @@
+/** @copyright (C) 2016-2017,  Gavin J Stark.  All rights reserved.
+ *
+ * @copyright
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *     http://www.apache.org/licenses/LICENSE-2.0.
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ *
+ * @file   riscv_i32_alu.cdl
+ * @brief  ALU for i32 RISC-V implementation
+ *
+ * CDL implementation of RISC-V i32 ALU based on the RISC-V
+ * specification v2.1.
+ *
+ */
+
+/*a Includes
+ */
+include "cpu/riscv/riscv_pipeline_types.h"
+include "cpu/riscv/riscv_internal_types.h"
+include "cpu/riscv/riscv_config.h"
+include "cpu/riscv/riscv.h"
+
+/*a Types
+ */
+typedef struct {
+    bit              branch_taken;
+    bit              jalr;
+
+    bit mem_cannot_start     "Asserted if the memory stage is performing an access that may still abort; blocks exec start and implies mem_cannot_complete";
+    bit mem_cannot_complete  "Asserted if the memory stage is performing an access and it is not completing; blocks exec completion, but not exec start";
+    bit dmem_blocked         "Asserted if a dmem access request is being presented but it is not being acked";
+    bit exec_cannot_start    "Asserted if the exec stage cannot start due to exec or coprocessor being unwilling";
+    bit exec_cannot_complete "Asserted if the exec stage cnnaot complete an operation";
+} t_control_flow_combs;
+
+/*a Module
+ */
+module riscv_i32_pipeline_control_flow( input  t_riscv_pipeline_state        pipeline_state,
+                                        input  t_riscv_fetch_req             ifetch_req,
+                                        input  t_riscv_pipeline_response     pipeline_response,
+                                        input  t_riscv_pipeline_trap_request pipeline_trap_request,
+                                        output t_riscv_pipeline_control      pipeline_control,
+                                        input t_riscv_i32_coproc_response    coproc_response,
+                                        input t_riscv_mem_access_resp        dmem_access_resp,
+                                        output  t_riscv_mem_access_req       dmem_access_req,
+                                        output  t_riscv_csr_access           csr_access,
+                                        output t_riscv_i32_coproc_response   pipeline_coproc_response,
+                                        output t_riscv_i32_coproc_controls   coproc_controls,
+                                        output t_riscv_csr_controls          csr_controls,
+                                        output t_riscv_i32_trace             trace,
+                                        input  t_riscv_config                riscv_config
+    )
+"""
+
+"""
+{
+    comb t_control_flow_combs  control_flow_combs;
+    pipeline_blocking : {
+        /*b Determine memory stage blocking - based on memory access in progress */
+        control_flow_combs.mem_cannot_complete  = 0;
+        control_flow_combs.mem_cannot_start     = 0;
+        if (pipeline_response.mem.valid && pipeline_response.mem.access_in_progress) {
+            if (!dmem_access_resp.access_complete) {
+                control_flow_combs.mem_cannot_complete = 1;
+            }
+            if (!dmem_access_resp.may_still_abort) {
+                control_flow_combs.mem_cannot_start    = 1;
+            }
+        }
+        if (rv_cfg_memory_abort_disable || !rv_cfg_memory_late_abort_enable || !riscv_config.mem_abort_late) {
+            control_flow_combs.mem_cannot_start    = 0;
+        }
+
+        /*b Determine if dmem access request is blocked */
+        control_flow_combs.dmem_blocked = 0;
+        if (pipeline_response.exec.dmem_access_req.valid) {
+            control_flow_combs.dmem_blocked = 1;
+            if (dmem_access_resp.ack) {
+                control_flow_combs.dmem_blocked = 0;
+            }
+            elsif (pipeline_response.exec.dmem_access_req.sequential && dmem_access_resp.ack_if_seq) {
+                control_flow_combs.dmem_blocked = 0;
+            }
+        }
+
+        /*b Determine exec stage blocking - based on exec requirements and memory being blocked */
+        control_flow_combs.exec_cannot_start    = ( control_flow_combs.mem_cannot_start  || // if mem cannot start then we may yet have to abort, so don't start exec either
+                                                    pipeline_response.exec.cannot_start  || // if pipeline says exec cannot start, then don't
+                                                    control_flow_combs.dmem_blocked      || // if a dmem request is blocked
+                                                    pipeline_coproc_response.cannot_start   // if coprocessors say cannot start, then don't
+            );
+        control_flow_combs.exec_cannot_complete = ( control_flow_combs.mem_cannot_complete   || // if mem cannot complete then exec cannot either
+                                                    !pipeline_response.exec.last_cycle       || // if exec is not ready to finish then it does not complete
+                                                    pipeline_coproc_response.cannot_complete
+            );
+        if (pipeline_response.exec.first_cycle && pipeline_response.exec.valid && control_flow_combs.exec_cannot_start) {
+            control_flow_combs.exec_cannot_complete = 1;
+        }
+
+        /*b Pipeline control outputs */
+        pipeline_control.mem.blocked           = control_flow_combs.mem_cannot_complete;
+        pipeline_control.exec.blocked_start    = 0;
+        pipeline_control.exec.completing_cycle = 1;
+        if (pipeline_response.exec.first_cycle && pipeline_response.exec.valid && control_flow_combs.exec_cannot_start) {
+            pipeline_control.exec.blocked_start   = 1;
+            pipeline_control.exec.completing_cycle = 0;
+        }
+        pipeline_control.exec.completing = pipeline_response.exec.valid && !control_flow_combs.exec_cannot_complete;
+        pipeline_control.exec.blocked    = pipeline_response.exec.valid &&  control_flow_combs.exec_cannot_complete;
+
+        pipeline_control.decode.cannot_complete = pipeline_response.decode.valid && pipeline_control.exec.blocked;
+        pipeline_control.decode.completing      = pipeline_response.decode.valid && !pipeline_control.decode.cannot_complete;
+        pipeline_control.decode.blocked         = pipeline_response.decode.valid &&  pipeline_control.decode.cannot_complete;
+
+    }
+
+    control_flow_code : {
+        // This logic is also in the trap interposer which is bad
+        control_flow_combs.branch_taken = 0;
+        control_flow_combs.jalr = 0;
+        pipeline_control.exec.pc_if_mispredicted = pipeline_response.exec.pc_if_mispredicted;
+        part_switch (pipeline_response.exec.idecode.op) {
+        case riscv_op_branch:   { control_flow_combs.branch_taken = pipeline_response.exec.branch_condition_met; }
+        case riscv_op_jal:      { control_flow_combs.branch_taken=1; }
+        case riscv_op_jalr:     {
+            control_flow_combs.branch_taken=1;
+            control_flow_combs.jalr=1;
+        }
+        }
+        if (!pipeline_response.exec.valid || pipeline_control.exec.blocked) {
+            control_flow_combs.branch_taken = 0;
+        }
+
+        pipeline_control.exec.mispredicted_branch = pipeline_control.exec.completing && (control_flow_combs.branch_taken != pipeline_response.exec.predicted_branch);
+    }
+
+    code : {
+        dmem_access_req = pipeline_response.exec.dmem_access_req;
+        if (!pipeline_control.exec.completing_cycle) { dmem_access_req.valid = 0; }
+
+        csr_access = pipeline_response.exec.csr_access;
+        if (!pipeline_response.exec.valid || pipeline_response.exec.idecode.illegal) {
+            csr_access.access = riscv_csr_access_none;
+        }
+
+        pipeline_control.trap.valid          = ( pipeline_trap_request.valid_from_int ||
+                                                 pipeline_trap_request.valid_from_mem ||
+                                                 (pipeline_trap_request.valid_from_exec && !pipeline_control.exec.blocked));
+
+        pipeline_control.trap.to_mode        = pipeline_trap_request.to_mode;
+        pipeline_control.trap.cause          = pipeline_trap_request.cause;
+        pipeline_control.trap.pc             = pipeline_trap_request.pc;
+        pipeline_control.trap.value          = pipeline_trap_request.value;
+        pipeline_control.trap.ret            = pipeline_trap_request.ret;
+        pipeline_control.trap.ebreak_to_dbg  = pipeline_trap_request.ebreak_to_dbg;
+
+        pipeline_control.flush.decode   = ifetch_req.flush_pipeline;
+        pipeline_control.flush.fetch    = 0;
+        pipeline_control.flush.exec     = pipeline_control.trap.valid && pipeline_trap_request.flushes_exec;
+        pipeline_control.flush.mem      = pipeline_trap_request.valid_from_mem;
+
+        if (pipeline_control.exec.mispredicted_branch) {
+            pipeline_control.flush.fetch     = 1;
+            pipeline_control.flush.decode    = 1;
+        }
+        if (pipeline_control.trap.valid) { // covers ret too
+            pipeline_control.flush.fetch     = 1;
+            pipeline_control.flush.decode    = 1;
+        }
+        if (pipeline_state.instruction_debug.valid) {
+            pipeline_control.flush.fetch     = 0;
+        }
+
+        csr_access.access_cancelled =  pipeline_control.flush.exec | pipeline_control.exec.blocked;
+    }
+
+    /*b CSR controls */
+    csr_controls : {
+        /*b CSR controls - post trap detection */
+        csr_controls = {*=0};
+        csr_controls.exec_mode    = pipeline_state.mode;
+        csr_controls.retire       = pipeline_response.exec.valid && !pipeline_control.exec.blocked && !pipeline_control.flush.exec;
+        csr_controls.trap         = pipeline_control.trap;
+    }
+
+    /*b Coprocessor interface */
+    coprocessor_interface """
+    Drive the coprocessor controls unless disabled; mirror the pipeline combs
+
+    Probably only legal if there is a decode stage - or if the coprocessor knows there is not
+    """: {
+        coproc_controls.dec_idecode         = pipeline_response.decode.idecode;
+        coproc_controls.dec_idecode_valid   = pipeline_response.decode.valid && !pipeline_state.interrupt_req;
+        coproc_controls.dec_to_alu_blocked  = pipeline_control.decode.blocked;
+        coproc_controls.alu_rs1             = pipeline_response.exec.rs1;
+        coproc_controls.alu_rs2             = pipeline_response.exec.rs2;
+        coproc_controls.alu_data_not_ready  = pipeline_response.exec.cannot_start;
+        coproc_controls.alu_flush_pipeline  = pipeline_control.flush.decode; // pipeline_fetch_data.dec_flush_pipeline;
+        coproc_controls.alu_cannot_start    = control_flow_combs.exec_cannot_start;
+        coproc_controls.alu_cannot_complete = control_flow_combs.exec_cannot_complete;
+
+        pipeline_coproc_response = coproc_response;
+        if (rv_cfg_coproc_force_disable || riscv_config.coproc_disable) {
+            coproc_controls = {*=0};
+            pipeline_coproc_response = {*=0};
+        }
+    }
+
+    /*b Trace */
+    trace """
+    Map the pipeline output to the trace
+    """: {
+        trace = {*=0};
+        trace.instr_valid    = pipeline_response.exec.valid && pipeline_control.exec.completing && !pipeline_control.flush.exec;
+        trace.instr_pc       = pipeline_response.exec.pc;
+        trace.mode           = pipeline_state.mode;
+        trace.instruction    = pipeline_response.exec.instruction.data;
+        trace.rfw_retire     = pipeline_response.rfw.valid;
+        trace.rfw_data_valid = pipeline_response.rfw.rd_written;
+        trace.rfw_rd         = pipeline_response.rfw.rd;
+        trace.rfw_data       = pipeline_response.rfw.data;
+        trace.branch_taken   = control_flow_combs.branch_taken;
+        trace.trap           = pipeline_control.trap.valid && !pipeline_control.trap.ret;
+        trace.ret            = pipeline_control.trap.ret;
+        trace.jalr           = control_flow_combs.jalr;
+        trace.branch_target  = ifetch_req.address;
+        trace.bkpt_valid     = 0;
+        trace.bkpt_reason    = 0;
+    }
+}

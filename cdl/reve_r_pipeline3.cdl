@@ -1,0 +1,537 @@
+/** @copyright (C) 2016-2017,  Gavin J Stark.  All rights reserved.
+ *
+ * @copyright
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *     http://www.apache.org/licenses/LICENSE-2.0.
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ *
+ * @file   riscv_minimal.cdl
+ * @brief  Minimal RISC-V implementation ported to CDL
+ *
+ * CDL implementation of 3-stage minimal RISC-V teaching implementation
+ *
+ * This is a three stage pipeline implementation (not including
+ * instruction fetch itself).
+ *
+ * The first stage is decode and register file read
+ *
+ * The second stage is data forwarding, ALU, data memory request, CSR access, conditional branching, jump table branching and traps.
+ *
+ * The third stage is data memory read (the memory is doing stuff, the CPU is not), rotating the data read and merging (for unaligned transfers)
+ *
+ * The end of the third stage is register file writeback; there is a register in RFW for memory data written to last register
+ *
+ *
+ * Decode stage: Instruction register, PC, valid
+ *
+ * decode i32/i32c -> rfr ports -> rf mux
+ *
+ * ALU stage: RFR values, decoded instruction, PC, valid, predicted_taken, cycle of instruction
+ *
+ * ALU result/mem result/RFR mux -> ALU operation -> Dmem access request -> jump
+ *
+ * Mem stage: ALU result, MEM request in progress, valid, rd, rd_valid
+ *
+ * Mem in progress -> data read -> rotate data
+ *
+ * RFW stage: MEM result, RF
+ *
+ */
+
+/*a Includes
+ */
+include "cpu/riscv/riscv_internal_types.h"
+include "cpu/riscv/riscv.h"
+include "cpu/riscv/riscv_submodules.h"
+include "cpu/riscv/riscv_config.h"
+
+/*a Types
+ */
+/*t t_ifetch_combs
+ *
+ * Combinatorials for the instruction fetch
+ */
+typedef struct {
+    bit request;
+    bit[32] address;
+    bit sequential;
+} t_ifetch_combs;
+
+/*t t_dec_state */
+typedef struct {
+    bit[32] pc                    "PC of instruction";
+    t_riscv_mode     mode         "Mode that the whole pipeline is operating in";
+    t_riscv_i32_inst instruction  "Fetched instruction, ready for decode, register fetch, execute and writeback";
+    bit valid                     "Asserted if @instruction is a valid fetched instruction, whether misaligned or not";
+} t_dec_state;
+
+/*t t_dec_combs
+ *
+ * Combinatorials of the decode state
+ */
+typedef struct {
+    t_riscv_i32_decode idecode;
+
+    t_riscv_word   rs1;
+    t_riscv_word   rs2;
+
+    bit rs1_from_alu;
+    bit rs1_from_mem;
+    bit rs2_from_alu;
+    bit rs2_from_mem;
+
+} t_dec_combs;
+
+/*t t_alu_state */
+typedef struct {
+    bit valid;
+    bit first_cycle              "Asserted if first cycle of an instruction execution (so instruction can be interrupted)";
+    t_riscv_i32_decode idecode;
+    bit[32] pc                   "PC of the fetched instruction";
+    bit[32] pc_if_mispredicted   "PC of the next instruction if branch prediction is incorrect";
+    bit predicted_branch         "Asserted if instruction decode predicted this is a taken branch";
+    bit rs1_from_alu;
+    bit rs1_from_mem;
+    bit rs2_from_alu;
+    bit rs2_from_mem;
+    t_riscv_word   rs1;
+    t_riscv_word   rs2;
+
+    t_riscv_i32_inst instruction    "Instruction, for trace and illegal instruction trap only";
+} t_alu_state;
+
+/*t t_alu_combs
+ *
+ * Combinatorials of the ALU stage
+ */
+typedef struct {
+    bit valid_legal              "Asserted if @instruction is a valid fetched instruction on a valid alignment";
+    bit blocked_by_mem           "Must qualify with valid; asserted if the ALU instruction cannot start because it uses a result of the memory stage";
+    t_riscv_word   rs1;
+    t_riscv_word   rs2;
+    t_riscv_i32_dmem_exec dmem_exec;
+    t_riscv_csr_access csr_access;
+    t_riscv_word result_data;
+} t_alu_combs;
+
+/*t t_mem_state */
+typedef struct {
+    bit valid                   "Asserted if the state here is valid";
+    t_riscv_word alu_result     "Result from the last alu stage; this will be combined with memory result to be stored in RF";
+    bit rd_written              "Asserted if Rd is to be written to (with result of memory or ALU)";
+    bit rd_from_mem             "Asserted if Rd is to be written to with result of memory - so a following instruction must wait until this one reaches RFW";
+    bit[5] rd                   "Destination register used by the instruction (if valid and rd_written are asserted)";
+    t_riscv_i32_dmem_request dmem_request "Data memory request data";
+    bit[32] pc                  "PC for reporting aborts, if configured";
+} t_mem_state;
+
+/*t t_mem_combs
+ *
+ * Combinatorials of the memory stage
+ */
+typedef struct {
+    t_riscv_word result_data;
+} t_mem_combs;
+
+/*t t_rfw_state */
+typedef struct {
+    bit valid                   "Asserted if the state here is valid";
+    t_riscv_word mem_result     "Result from the last mem stage; this was written to the RF (if required) at the same time it was stored here";
+    bit rd_written              "Asserted if Rd of the RF was written to";
+    bit[5] rd                   "Destination register used by the instruction (if valid and rd_written are asserted)";
+} t_rfw_state;
+
+/*a Module
+ */
+module riscv_i32c_pipeline3( clock clk,
+                             input bit reset_n,
+                             input  t_riscv_mem_access_resp dmem_access_resp,
+                             input t_riscv_pipeline_control     pipeline_control,
+                             output t_riscv_pipeline_response   pipeline_response,
+                             input t_riscv_pipeline_fetch_data  pipeline_fetch_data,
+                             input t_riscv_i32_coproc_response   coproc_response,
+                             input t_riscv_word                 csr_read_data,
+                             input  t_riscv_config          riscv_config
+)
+"""
+This is just the processor pipeline, using thress stages for execution.
+
+The decode and RFR is performed in the first stage
+
+The ALU execution (and coprocessor execution) is performed in the second stage
+
+Memory operations are performed in the third stage
+
+Register file is written at the end of the third stage; there is a RFW stage to
+forward data from RFW back to execution.
+
+Instruction fetch
+-----------------
+
+The instruction fetch request for the next cycle is put out just after
+the ALU stage logic, which may be a long time into the cycle
+(althought the design keeps this to a minimum); the fetch data
+response presents the instruction fetched at the end of the cycle,
+where it is registered for execution.
+
+The instruction fetch response must then be valid combinatorially
+based on the instruction fetch request.
+
+Data memory access
+------------------
+
+The data memory request is presented in the ALU stage, for an access
+to complete during the memory stage.
+
+To support simple synchronous memory operation the data memory access
+includes valid write data in the same cycle as the request.
+
+The data memory response is valid one cycle later than a request. This
+includes a wait signal. The external memory subsystem, therefore, is a
+two stage pipeline. The wait signal controls whether an access
+completes, but not if an access can be taken (except indirectly).
+
+Hence external logic must always either register a request or
+guarantee not to assert wait.
+
+An example implementation of could be
+    dmem_access_resp.wait = fn ( access_in_progress );
+    access_can_be_taken = (!access_in_progress.valid) || (!dmem_access_resp.wait);
+    if (access_can_be_taken) {
+      access_in_progress <= dmem_access_req;
+    }
+}
+
+"""
+{
+
+    /*b State and comb
+     */
+    default clock clk;
+    default reset active_low reset_n;
+
+    clocked t_riscv_word[32] registers={*=-1} "Register 0 is tied to 0 - so it is written on every cycle to zero...";
+
+    net     t_riscv_i32_decode     idecode_i32  "Decode of instruction including debug";
+    net     t_riscv_i32_decode     idecode_i32c "Decode of including using RV32C";
+    net     t_riscv_i32_alu_result alu_result;
+
+    comb t_dec_combs dec_combs;
+    comb t_alu_combs alu_combs;
+    comb t_mem_combs mem_combs;
+    clocked t_dec_state     dec_state={*=0};
+    clocked t_alu_state     alu_state={*=0};
+    clocked t_mem_state     mem_state={*=0};
+    clocked t_rfw_state     rfw_state={*=0};
+
+    net t_riscv_i32_dmem_request alu_combs_dmem_request "Data memory request data";
+    net t_riscv_word             mem_combs_dmem_read_data;
+
+    /*b Decode, RFR stage
+     */
+    decode_rfr_stage """
+    The decode/RFR stage decodes an instruction, follows unconditional
+    branches and backward conditional branches (to generate the next
+    PC as far as decode is concerned), determines register forwarding
+    required, reads the register file.
+    """: {
+        /*b Instruction register - note all PC value are legal (bit 0 is cleared automatically though) */
+        //pipeline_response.decode.blocked = dec_state.valid && alu_state.valid && alu_combs.cannot_complete;
+
+        dec_state.valid <= 0;
+        if (pipeline_control.decode.cannot_complete && !pipeline_control.flush.decode) {
+            dec_state <= dec_state;
+        } else {
+            if (pipeline_fetch_data.valid && !pipeline_control.flush.fetch) {
+                dec_state.valid <= 1;
+                dec_state.mode <= pipeline_fetch_data.mode;
+                dec_state.pc <= pipeline_fetch_data.pc;
+                dec_state.instruction <= pipeline_fetch_data.instruction;
+                if (rv_cfg_debug_force_disable || !riscv_config.debug_enable) {
+                    dec_state.instruction.debug <= {*=0};
+                }
+            }
+        }
+
+        /*b Decode instruction */
+        riscv_i32_decode decode_i32( instruction <= dec_state.instruction,
+                                     idecode     => idecode_i32,
+                                     riscv_config      <= riscv_config );
+
+        riscv_i32c_decode decode_i32c( instruction <= dec_state.instruction,
+                                       idecode      => idecode_i32c,
+                                       riscv_config      <= riscv_config );
+
+        /*b Select decode */
+        dec_combs.idecode = idecode_i32;
+        if ((!rv_cfg_i32c_force_disable) && riscv_config.i32c) {
+            if (rv_cfg_debug_force_disable || !riscv_config.debug_enable || !dec_state.instruction.debug.valid) {
+                if (dec_state.instruction.data[2;0]!=2b11) {
+                    dec_combs.idecode = idecode_i32c;
+                }
+            }
+        }
+
+        /*b Register read */
+        dec_combs.rs1 = registers[dec_combs.idecode.rs1]; // note that register 0 is ALWAYS 0 anyway
+        dec_combs.rs2 = registers[dec_combs.idecode.rs2]; // note that register 0 is ALWAYS 0 anyway
+
+        /*b Pipeline response from decode */
+        pipeline_response.decode.valid                    = dec_state.valid;
+        pipeline_response.decode.pc                       = dec_state.pc;
+        pipeline_response.decode.idecode                  = dec_combs.idecode;
+        pipeline_response.decode.branch_target            = dec_state.pc + dec_combs.idecode.immediate;
+        pipeline_response.decode.enable_branch_prediction = 1;
+
+        /*b Register forwarding determination */
+        dec_combs.rs1_from_alu = 0;
+        dec_combs.rs1_from_mem = 0;
+        dec_combs.rs2_from_alu = 0;
+        dec_combs.rs2_from_mem = 0;
+        if (dec_combs.idecode.rs1_valid) {
+            if ((mem_state.rd == dec_combs.idecode.rs1) && mem_state.rd_written) {
+                dec_combs.rs1_from_mem = 1;
+            }
+            if ((alu_state.idecode.rd == dec_combs.idecode.rs1) && alu_state.idecode.rd_written) {
+                dec_combs.rs1_from_alu = 1;
+            }
+        }
+        if (dec_combs.idecode.rs2_valid) {
+            if ((mem_state.rd == dec_combs.idecode.rs2) && mem_state.rd_written) {
+                dec_combs.rs2_from_mem = 1;
+            }
+            if ((alu_state.idecode.rd == dec_combs.idecode.rs2) && alu_state.idecode.rd_written) {
+                dec_combs.rs2_from_alu = 1;
+            }
+        }
+        assert(!mem_state.rd_written || mem_state.valid,          "Mem state rd_written must only be asserted if valid is too");
+        assert(!alu_state.idecode.rd_written || alu_state.valid,  "ALU state rd_written must only be asserted if valid is too");
+    }
+
+    /*b ALU (execute) stage registers (alu_state)
+     */
+    alu_stage """
+    The ALU stage does data forwarding, ALU operation, conditional branches, CSR accesses, memory request
+    """: {
+        /*b Record state */
+        alu_state.valid <= 0;
+        alu_state.idecode.rd_written <= 0; // Ensure it is cleared if invalid
+        if (pipeline_control.exec.blocked && !pipeline_control.flush.exec) {
+            if (!pipeline_control.exec.blocked_start) {
+                alu_state.first_cycle <= 0;
+            }
+            alu_state <= alu_state;
+            if (!pipeline_control.mem.blocked) { // If memory is not blocked then shuffle down dependencies
+                alu_state.rs1_from_alu <= 0;
+                alu_state.rs2_from_alu <= 0;
+                alu_state.rs1_from_mem <= alu_state.rs1_from_alu;
+                alu_state.rs2_from_mem <= alu_state.rs2_from_alu;
+            }
+            if (alu_state.rs1_from_mem) {
+                alu_state.rs1 <= rfw_state.mem_result;
+            }
+            if (alu_state.rs2_from_mem) {
+                alu_state.rs2 <= rfw_state.mem_result;
+            }
+        } elsif (pipeline_control.flush.decode) {
+            alu_state.valid               <= 0;
+            alu_state.pc_if_mispredicted  <= pipeline_fetch_data.dec_pc_if_mispredicted;
+            alu_state.predicted_branch    <= pipeline_fetch_data.dec_predicted_branch;
+        } elsif (dec_state.valid) {
+            alu_state.valid               <= 1;
+            alu_state.first_cycle         <= 1;
+            alu_state.idecode             <= dec_combs.idecode;
+            alu_state.pc                  <= dec_state.pc;
+            alu_state.pc_if_mispredicted  <= pipeline_fetch_data.dec_pc_if_mispredicted;
+            alu_state.predicted_branch    <= pipeline_fetch_data.dec_predicted_branch;
+            alu_state.rs1                 <= dec_combs.rs1;
+            alu_state.rs2                 <= dec_combs.rs2;
+            alu_state.rs1_from_alu        <= dec_combs.rs1_from_alu;
+            alu_state.rs2_from_alu        <= dec_combs.rs2_from_alu;
+            alu_state.rs1_from_mem        <= dec_combs.rs1_from_mem;
+            alu_state.rs2_from_mem        <= dec_combs.rs2_from_mem;
+            if (pipeline_control.mem.blocked) { // If memory is blocked then dependencies are one closer
+                alu_state.rs1_from_alu        <= dec_combs.rs1_from_mem;
+                alu_state.rs2_from_alu        <= dec_combs.rs2_from_mem;
+                alu_state.rs1_from_mem        <= 0;
+                alu_state.rs2_from_mem        <= 0;
+            }
+
+            alu_state.instruction   <= dec_state.instruction;
+        }
+    }
+
+    /*b ALU (execute) stage logic (alu_combs)
+     */
+    alu_stage_logic """
+    The ALU stage does data forwarding, ALU operation, conditional branches, CSR accesses, memory request
+    """: {
+        alu_combs.valid_legal = alu_state.valid && !alu_state.idecode.illegal;
+
+        /*b Data forwarding */
+        alu_combs.rs1 = alu_state.rs1;
+        alu_combs.blocked_by_mem = 0;
+        if (alu_state.rs1_from_mem) {
+            alu_combs.rs1 = rfw_state.mem_result;
+        }
+        if (alu_state.rs1_from_alu) {
+            alu_combs.rs1 = mem_state.alu_result;
+            if (mem_state.rd_from_mem) {
+                alu_combs.blocked_by_mem = alu_state.idecode.rs1_valid;
+            }
+        }
+        alu_combs.rs2 = alu_state.rs2;
+        if (alu_state.rs2_from_mem) {
+            alu_combs.rs2 = rfw_state.mem_result;
+        }
+        if (alu_state.rs2_from_alu) {
+            alu_combs.rs2 = mem_state.alu_result;
+            if (mem_state.rd_from_mem) {
+                alu_combs.blocked_by_mem = alu_state.idecode.rs2_valid;
+            }
+        }
+
+        /*b Execute ALU stage */
+        riscv_i32_alu alu( idecode <= alu_state.idecode,
+                           pc  <= alu_state.pc,
+                           rs1 <= alu_combs.rs1,
+                           rs2 <= alu_combs.rs2,
+                           alu_result => alu_result );
+
+        /*b Minimal CSRs */
+        alu_combs.csr_access = alu_result.csr_access;
+
+        /*b ALU stage result */
+        alu_combs.result_data = alu_result.result | coproc_response.result; // OR here may make the logic shorter
+        if (coproc_response.result_valid) {
+            alu_combs.result_data = coproc_response.result;
+        }
+        if (alu_state.idecode.csr_access.access != riscv_csr_access_none) {
+            alu_combs.result_data = csr_read_data;
+        }
+
+        /*b Memory access handling - must be valid before middle of cycle */
+        alu_combs.dmem_exec = { valid          = alu_state.valid,
+                                idecode        = alu_state.idecode,
+                                arith_result   = alu_result.arith_result, // address of access
+                                rs2            = alu_combs.rs2,    // data for access (before rotation)
+                                first_cycle    = alu_state.first_cycle,
+                                mode           = dec_state.mode // can use dec_state as pipeline is always in that mode
+        };
+        riscv_i32_dmem_request dmem_req( dmem_exec    <= alu_combs.dmem_exec,
+                                         dmem_request => alu_combs_dmem_request );
+
+        /*b Pipeline response from exec */
+        pipeline_response.exec.valid              = alu_state.valid;
+        pipeline_response.exec.first_cycle        = alu_state.first_cycle;
+        pipeline_response.exec.last_cycle         = 1; // Everything is single cycle so far...
+        pipeline_response.exec.interrupt_block    = 0; // The standard pipeline cannot block interrupts
+        pipeline_response.exec.idecode            = alu_state.idecode;
+        pipeline_response.exec.pc                 = alu_state.pc;
+        pipeline_response.exec.pc_if_mispredicted = alu_state.pc_if_mispredicted; // Used for JAL and conditional branch
+        if (alu_state.idecode.op==riscv_op_jalr) { pipeline_response.exec.pc_if_mispredicted = alu_result.branch_target;}
+        pipeline_response.exec.instruction        = alu_state.instruction;
+        pipeline_response.exec.predicted_branch   = alu_state.predicted_branch;
+        pipeline_response.exec.rs1                = alu_combs.rs1;
+        pipeline_response.exec.rs2                = alu_combs.rs2;
+        pipeline_response.exec.dmem_access_req    = alu_combs_dmem_request.access;
+        pipeline_response.exec.csr_access         = alu_combs.csr_access;
+        pipeline_response.exec.cannot_start       = alu_combs.blocked_by_mem; // Need not be valid if exec.valid is low
+        pipeline_response.exec.branch_condition_met = alu_result.branch_condition_met;
+
+        pipeline_response.pipeline_empty = !dec_state.valid && !alu_state.valid && !mem_state.valid && !rfw_state.valid;
+
+    }
+
+    /*b Memory stage
+     */
+    memory_stage """
+    The memory access stage is when the memory is performing a read
+
+    When unaligned accesses are supported this will merge two reads
+    using multiple cycles
+
+    This is a single cycle, with committed transactions only being
+    valid
+
+    If the memory is performing a read then the memory data is rotated
+    and presented as the result; otherwise the ALU result is passed
+    through.
+
+    """: {
+        /*b State - tie some things down so that data path does not toggle so much */
+        mem_state.valid        <= 0;
+        mem_state.rd_written   <= 0;
+        mem_state.rd_from_mem  <= 0;
+        if (pipeline_control.mem.blocked && !pipeline_control.flush.mem) {
+            mem_state <= mem_state;
+        } elsif (alu_combs.valid_legal && !pipeline_control.exec.blocked && !pipeline_control.flush.exec) { // better if async control flow interrupt
+            mem_state.valid         <= 1;
+            mem_state.dmem_request  <= alu_combs_dmem_request;
+            if (alu_combs_dmem_request.reading && alu_state.idecode.rd_written) { // && does not require another cycle?
+                mem_state.rd_from_mem <= 1;
+            }
+            mem_state.rd_written   <= alu_state.idecode.rd_written;
+            mem_state.rd           <= alu_state.idecode.rd;
+            mem_state.alu_result   <= alu_combs.result_data;
+            mem_state.pc           <= alu_state.pc;
+        }
+
+        /*b Memory read handling */
+        riscv_i32_dmem_read_data dmem_data( dmem_request <= mem_state.dmem_request,
+                                            last_data <= mem_state.alu_result, // only for unaligned reads
+                                            dmem_access_resp <= dmem_access_resp,
+                                            dmem_read_data => mem_combs_dmem_read_data);
+
+        /*b Memory result mux */
+        mem_combs.result_data = mem_state.alu_result;
+        if (mem_state.dmem_request.reading) {
+            mem_combs.result_data = mem_combs_dmem_read_data;
+        }
+
+        /*b Pipeline response from decode */
+        pipeline_response.mem.valid               = mem_state.valid;
+        pipeline_response.mem.pc                  = mem_state.pc;
+        pipeline_response.mem.addr                = mem_state.dmem_request.access.address;
+        pipeline_response.mem.access_in_progress  = mem_state.valid && mem_state.dmem_request.access.valid;
+    }
+
+    /*b RFW 'stage'
+     */
+    rfw_stage """
+    The RFW stage takes the memory read data and memory stage internal data,
+    and combines them, preparing the result for the register file (written at the end of the clock)
+    """: {
+        /*b RFW state */
+        rfw_state.valid        <= 0;
+        rfw_state.rd_written   <= 0;
+        if (mem_state.valid && !pipeline_control.mem.blocked && !pipeline_control.flush.mem) {
+            rfw_state.valid        <= 1;
+            rfw_state.rd_written   <= mem_state.rd_written;
+            rfw_state.rd           <= mem_state.rd;
+            rfw_state.mem_result   <= mem_combs.result_data;
+            if (mem_state.rd_written) {
+                registers[mem_state.rd] <= mem_combs.result_data;
+            }
+        }
+        registers[0] <= 0; // register 0 is always zero...
+
+        /*b Pipeline response
+         */
+        pipeline_response.rfw.valid      = rfw_state.valid;
+        pipeline_response.rfw.rd_written = rfw_state.rd_written;
+        pipeline_response.rfw.rd         = rfw_state.rd;
+        pipeline_response.rfw.data       = rfw_state.mem_result;
+
+        /*b All done */
+    }
+
+    /*b All done */
+}
+

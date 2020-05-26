@@ -1,0 +1,382 @@
+/** @copyright (C) 2016-2017,  Gavin J Stark.  All rights reserved.
+ *
+ * @copyright
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *     http://www.apache.org/licenses/LICENSE-2.0.
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ *
+ * @file   tb_riscv_minimal.cdl
+ * @brief  Testbench for minimal RISC-V
+ *
+ */
+
+/*a Includes
+ */
+include "srams.h"
+include "cpu/riscv/riscv.h"
+include "cpu/riscv/riscv_modules.h"
+include "cpu/riscv/riscv_pipeline.h"
+include "cpu/riscv/riscv_submodules.h"
+include "cpu/riscv/chk_riscv.h"
+
+/*a External modules */
+extern module se_test_harness( clock clk, output t_jtag jtag, output bit tck_enable, input bit tdo )
+{
+    timing from rising clock clk jtag, tck_enable;
+    timing to rising clock clk tdo;
+}
+
+/*a Module
+ */
+module tb_riscv_i32mc_pipeline3( clock jtag_tck,
+                                 clock clk,
+                                 input bit reset_n
+)
+{
+    /*b Default clock and reset
+     */
+    default clock clk;
+    default reset active_low reset_n;
+
+    /*b Configuration and tie-offs
+     */
+    clocked t_riscv_config riscv_config={*=0, i32c=1, i32m=1, i32m_fuse=1, coproc_disable=0, debug_enable=1} ;
+    clocked t_riscv_irqs                 irqs= {*=0};
+
+    /*b Nets
+     */
+    net t_jtag jtag;
+    net bit tdo;
+    net bit[5]ir;
+    net t_jtag_action dr_action;
+    net bit[50]dr_in;
+    net bit[50]dr_tdi_mask;
+    net bit[50]dr_out;
+    net bit tck_enable;
+    comb bit tck_enable_fix;
+    gated_clock clock jtag_tck active_high tck_enable_fix jtag_tck_gated;
+
+    net   t_apb_request  apb_request  "APB request";
+    net   t_apb_response apb_response "APB response";
+    net   t_riscv_debug_mst debug_mst;
+    comb  t_riscv_debug_tgt debug_tgt;
+    net   t_riscv_debug_tgt debug_tgt0;
+
+    net  t_riscv_mem_access_req  dmem_access_req;
+    comb t_riscv_mem_access_resp dmem_access_resp;
+
+    net  t_riscv_fetch_req  rv_imem_access_req;
+    comb t_riscv_fetch_req  imem_access_req;
+    comb t_riscv_fetch_resp rv_imem_access_resp;
+    net t_riscv_csr_controls      csr_controls;
+    net t_riscv_csr_data          csr_data;
+    net t_riscv_csr_access        csr_access;
+    net t_riscv_csrs              csrs;
+
+    /*b Nets for the pipeline
+     */
+    net t_riscv_pipeline_state        pipeline_state;
+    net t_riscv_pipeline_control      pipeline_control;
+    net t_riscv_pipeline_response     pipeline_response;
+    net t_riscv_pipeline_fetch_req    pipeline_fetch_req;
+    net t_riscv_pipeline_fetch_data   pipeline_fetch_data;
+    net t_riscv_pipeline_trap_request pipeline_trap_request;
+
+    /*b Data memory state and combs
+     */
+    clocked t_riscv_mem_access_req dmem_access_in_progress = {*=0};
+
+    /*b State and comb
+     */
+    net bit[32] imem_mem_read_data;
+    net bit[32] main_mem_read_data;
+    net t_riscv_i32_coproc_controls  coproc_controls;
+    net t_riscv_i32_coproc_response  coproc_response;
+    net t_riscv_i32_coproc_response  pipeline_coproc_response;
+
+    clocked bit[32] last_imem_mem_read_data=0;
+    net t_riscv_i32_trace trace;
+    comb t_riscv_packed_trace_control trace_control;
+    net t_riscv_i32_packed_trace packed_trace;
+    net t_riscv_i32_compressed_trace compressed_trace;
+    net t_riscv_i32_decompressed_trace decompressed_trace;
+    net bit[5] nybbles_consumed;
+
+    /*b Clock divider state
+     */
+    comb bit riscv_clk_enable;
+    clocked clock clk reset active_low reset_n bit[2] clk_divider = 0;
+    clocked clock clk reset active_low reset_n bit riscv_clk_cycle_0 = 1;
+    clocked clock clk reset active_low reset_n bit riscv_clk_cycle_1 = 0;
+    clocked clock clk reset active_low reset_n bit riscv_clk_cycle_2 = 0;
+    gated_clock clock clk active_high riscv_clk_cycle_2 riscv_clk;
+
+    /*b Clock divider
+     */
+    clock_divider """
+    """ : {
+        riscv_clk_cycle_0 <= (clk_divider==2b10);
+        riscv_clk_cycle_1 <= (clk_divider==2b00);
+        riscv_clk_cycle_2 <= (clk_divider==2b01);
+        clk_divider <= clk_divider + 1;
+        if (riscv_clk_cycle_2) { clk_divider <= 0; }
+        riscv_clk_enable = riscv_clk_cycle_2;
+    }
+
+    /*b Configuration
+     */
+    configuration """
+    Tie-offs are best done as clocked signals, with the reset value and the assigned values being equal.
+    In synthesis the flops will be optimized out as tied-low or tied-high.
+    """ : {
+        riscv_config <= {*=0};
+        riscv_config.i32c <= 1;
+        riscv_config.e32  <= 0;
+        riscv_config.i32m <= 1;
+        riscv_config.i32m_fuse <= 1;
+        riscv_config.coproc_disable <= 0;
+        riscv_config.debug_enable <= 1;
+
+        irqs <= {*=0};
+    }
+
+    /*b Instantiate srams
+     */
+    srams: {
+        rv_imem_access_resp = {*=0};
+        rv_imem_access_resp.valid    = (rv_imem_access_req.req_type!=rv_fetch_none);
+        rv_imem_access_resp.data     = imem_mem_read_data;
+        if (!rv_imem_access_req.address[1]) {
+            imem_access_req = rv_imem_access_req;
+            rv_imem_access_resp.data = imem_mem_read_data;
+        } else {
+            if (riscv_clk_cycle_0) {
+                imem_access_req = rv_imem_access_req;
+            } else {
+                imem_access_req = rv_imem_access_req;
+                imem_access_req.address = rv_imem_access_req.address + 4;
+                rv_imem_access_resp.data = bundle(imem_mem_read_data[16;0], last_imem_mem_read_data[16;16]);
+            }
+        }
+        last_imem_mem_read_data <= imem_mem_read_data;
+        se_sram_srw_16384x32 imem(sram_clock <- clk,
+                                  select         <= (imem_access_req.req_type!=rv_fetch_none) & (riscv_clk_cycle_0 || riscv_clk_cycle_1),
+                                  read_not_write <= 1,
+                                  write_enable   <= -1,
+                                  address        <= imem_access_req.address[14;2],
+                                  write_data     <= 0,
+                                  data_out       => imem_mem_read_data );
+    }
+
+    /*b Data memory
+     */
+    data_memory: {
+
+        dmem_access_resp.ack        = 1;
+        dmem_access_resp.ack_if_seq = 1;
+        dmem_access_resp.abort_req  = 0;
+        dmem_access_resp.may_still_abort  = 0;
+        if (riscv_clk_cycle_2) {
+            dmem_access_in_progress <= dmem_access_req;
+            if (!dmem_access_resp.ack) {
+                dmem_access_in_progress.valid <= 0;
+            }
+        }
+        se_sram_srw_16384x32_we8 dmem(sram_clock <- clk,
+                                      select         <= dmem_access_in_progress.valid,
+                                      read_not_write <= (dmem_access_in_progress.req_type != rv_mem_access_write),
+                                      address        <= dmem_access_in_progress.address[14;2],
+                                      write_enable   <= dmem_access_in_progress.byte_enable,
+                                      write_data     <= dmem_access_in_progress.write_data,
+                                      data_out       => main_mem_read_data );
+        dmem_access_resp.access_complete = 1;
+        dmem_access_resp.read_data  = main_mem_read_data;
+    }
+
+    /*b Instantiate debug
+     */
+    debug_instances: {
+        tck_enable_fix = tck_enable;
+        debug_tgt  = debug_tgt0;
+
+        jtag_tap tap( jtag_tck <- jtag_tck_gated,
+                      reset_n <= reset_n,
+                      jtag <= jtag,
+                      tdo => tdo,
+
+                      ir => ir,
+                      dr_action => dr_action,
+                      dr_in => dr_in,
+                      dr_tdi_mask <= dr_tdi_mask,
+                      dr_out <= dr_out );
+
+        riscv_jtag_apb_dm dm_apb( jtag_tck <- jtag_tck_gated,
+                      reset_n <= reset_n,
+
+                      ir <= ir,
+                      dr_action <= dr_action,
+                      dr_in <= dr_in,
+                      dr_tdi_mask => dr_tdi_mask,
+                      dr_out => dr_out,
+
+                      apb_clock <- clk,
+                      apb_request => apb_request,
+                      apb_response <= apb_response );
+
+        riscv_i32_debug dm( clk <- clk,
+                            reset_n <= reset_n,
+
+                            apb_request <= apb_request,
+                            apb_response => apb_response,
+
+                            debug_mst  => debug_mst,
+                            debug_tgt <= debug_tgt
+            );
+    }
+
+    /*b Instantiate Reve-R pipeline
+     */
+    reve_r_pipeline: {
+        riscv_i32_pipeline_control pc(clk <- clk,
+                                      riscv_clk <- riscv_clk,
+                                      reset_n          <= reset_n,
+                                      riscv_clk_enable <= riscv_clk_enable,
+                                      csrs <= csrs,
+                                      pipeline_state => pipeline_state,
+                                      pipeline_response <= pipeline_response,
+                                      pipeline_fetch_data <= pipeline_fetch_data,
+                                      pipeline_control <= pipeline_control,
+                                      riscv_config     <= riscv_config,
+                                      trace            <= trace,
+                                      debug_mst        <= debug_mst,
+                                      debug_tgt       => debug_tgt0,
+                                      rv_select <= 0 );
+
+        riscv_i32_pipeline_control_fetch_req pc_fetch_req( pipeline_state <= pipeline_state,
+                                                           pipeline_response <= pipeline_response,
+                                                           pipeline_fetch_req => pipeline_fetch_req,
+                                                           ifetch_req => rv_imem_access_req );
+
+        riscv_i32_pipeline_control_fetch_data pc_fetch_data( pipeline_state <= pipeline_state,
+                                                             ifetch_req  <= rv_imem_access_req,
+                                                             ifetch_resp <= rv_imem_access_resp,
+                                                             pipeline_fetch_req <= pipeline_fetch_req,
+                                                             pipeline_fetch_data => pipeline_fetch_data );
+
+        riscv_i32_pipeline_trap_interposer ti( pipeline_state         <= pipeline_state,
+                                               pipeline_response      <= pipeline_response,
+                                               dmem_access_resp       <= dmem_access_resp,
+                                               pipeline_trap_request  => pipeline_trap_request,
+                                               riscv_config           <= riscv_config
+        );
+
+        riscv_i32_pipeline_control_flow cf( pipeline_state <= pipeline_state,
+                                            ifetch_req  <= rv_imem_access_req,
+                                            pipeline_response <= pipeline_response,
+                                            pipeline_trap_request  <= pipeline_trap_request,
+                                            coproc_response <= coproc_response,
+                                            pipeline_control => pipeline_control,
+                                            dmem_access_resp <= dmem_access_resp,
+                                            dmem_access_req => dmem_access_req,
+                                            csr_access     => csr_access,
+                                            pipeline_coproc_response => pipeline_coproc_response,
+                                            coproc_controls  => coproc_controls,
+                                            csr_controls     => csr_controls,
+                                            trace            => trace,
+                                            riscv_config <= riscv_config
+        );
+
+        riscv_i32c_pipeline3 dut( clk <- riscv_clk,
+                                  reset_n <= reset_n,
+                                  pipeline_control <= pipeline_control,
+                                  pipeline_response => pipeline_response,
+                                  pipeline_fetch_data <= pipeline_fetch_data,
+                                  dmem_access_resp <= dmem_access_resp,
+                                  coproc_response <= pipeline_coproc_response,
+                                  csr_read_data    <= csr_data.read_data,
+                                  riscv_config <= riscv_config);
+
+    }
+
+    /*b CSRs
+     */
+    csr_instance: {
+        riscv_csrs_machine_debug_user csrs( clk <- clk,
+                                      riscv_clk <- riscv_clk,
+                                                reset_n <= reset_n,
+                                                riscv_clk_enable <= riscv_clk_enable,
+                                                irqs <= irqs,
+                                                csr_access     <= csr_access,
+                                                csr_data       => csr_data,
+                                                csr_controls   <= csr_controls,
+                                                csrs => csrs
+            );
+    }
+
+    /*b Coprocessors
+     */
+    coprocessors: {
+        riscv_i32_muldiv m( clk <- riscv_clk,
+                            reset_n <= reset_n,
+                            coproc_controls <= coproc_controls,
+                            coproc_response => coproc_response,
+                            riscv_config <= riscv_config );
+
+    }
+
+    /*b Test harness
+     */
+    test_harness_inst: {
+        se_test_harness th(clk <- jtag_tck, jtag=>jtag, tck_enable=>tck_enable, tdo<=tdo);
+    }
+
+    /*b Trace logic and modules
+     */
+    riscv_trace: {
+        trace_control = {enable=1,
+                         enable_control=1,
+                         enable_pc=1, // priority over rfd?
+                         enable_rfd=0,
+                         enable_breakpoint=1,
+                         valid = riscv_clk_enable};
+        riscv_i32_trace trace(clk <- clk,
+                              reset_n <= reset_n,
+                              riscv_clk_enable <= riscv_clk_enable,
+                              trace <= trace );
+        riscv_i32_trace_pack trace_pack(clk <- clk,
+                                        reset_n <= reset_n,
+                                        trace_control <= trace_control,
+                                        trace <= trace,
+                                        packed_trace => packed_trace );
+        riscv_i32_trace_compression trace_compression(packed_trace<=packed_trace,
+                                                      compressed_trace => compressed_trace );
+        riscv_i32_trace_decompression trace_decompression( compressed_nybbles <= compressed_trace.data,
+                                                           decompressed_trace => decompressed_trace,
+                                                           nybbles_consumed => nybbles_consumed );
+    }
+
+    /*b Checkers - for matching trace etc
+     */
+    checkers: {
+        chk_riscv_ifetch checker_ifetch( clk <- riscv_clk,
+                                         fetch_req <= rv_imem_access_req,
+                                         fetch_resp <= rv_imem_access_resp
+                                         //error_detected =>,
+                                         //cycle => ,
+            );
+        chk_riscv_trace checker_trace( clk <- riscv_clk,
+                                       trace <= trace
+                                         //error_detected =>,
+                                         //cycle => ,
+            );
+    }
+
+    /*b All done
+     */
+}

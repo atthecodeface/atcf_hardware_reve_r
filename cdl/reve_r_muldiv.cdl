@@ -1,0 +1,766 @@
+/** @copyright (C) 2016-2018,  Gavin J Stark.  All rights reserved.
+ *
+ * @copyright
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *     http://www.apache.org/licenses/LICENSE-2.0.
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ *
+ * @file   riscv_i32_alu.cdl
+ * @brief  ALU for i32 RISC-V implementation
+ *
+ * CDL implementation of RISC-V i32 ALU based on the RISC-V
+ * specification v2.1.
+ *
+ */
+
+/*a Includes
+ */
+include "cpu/riscv/riscv_internal_types.h"
+include "cpu/riscv/riscv.h"
+
+/*a Constants - configuration */
+constant integer i32m_fuse_force_disable=0;
+
+/*a Types
+ */
+
+/*t t_muldiv_fsm */
+typedef fsm {
+    muldiv_idle;
+    muldiv_mul_init;
+    muldiv_mul_step;
+    muldiv_div_init;
+    muldiv_div_shift;
+    muldiv_div_step;
+    muldiv_complete;
+} t_muldiv_fsm;
+
+/*t t_add_h_0_src
+ */
+typedef enum[2] {
+    add_h_0_src_zero,
+    add_h_0_src_acc,
+    add_h_0_src_neg_rs1,
+} t_add_h_0_src;
+
+/*t t_add_h_1_src
+ */
+typedef enum[2] {
+    add_h_1_src_zero,
+    add_h_1_src_shf,
+    add_h_1_src_neg_rs2,
+} t_add_h_1_src;
+
+/*t t_result_type
+ */
+typedef enum[2] {
+    result_type_low,
+    result_type_high,
+} t_result_type;
+
+/*t t_dp_combs */
+typedef struct {
+    bit rs1_is_negative "Asserted if rs1 is negative (i.e. == rs1[31])";
+    bit rs2_is_negative "Asserted if rs1 is negative (i.e. == rs2[31])";
+
+    bit[32] neg_rs1 "Negated (arithmetically) version of alu_rs1";
+    bit[32] neg_rs2 "Negated (arithmetically) version of alu_rs2";
+
+    bit sel_neg_rs1 "If asserted select neg_rs1 rather than rs1";
+    bit sel_neg_rs2 "If asserted select neg_rs2 rather than rs2";
+
+    bit[32] sel_rs1 "Optionally negated (arithmetically) version of alu_rs1";
+    bit[32] sel_rs2 "Optionally negated (arithmetically) version of alu_rs2";
+
+    bit[5]  areg_top_bit_set;
+    bit[5]  breg_top_bit_set;
+
+    bit[2] sel0123 "Select which of state.b*(0/1/2/3) for first adder";
+    bit[2] sel048c "Select which of state.b*(0/4/8/12) for first adder";
+    bit[36] breg_0 "state.b * 0";
+    bit[36] breg_1 "state.b * 1";
+    bit[36] breg_2 "state.b * 2";
+    bit[36] breg_3 "state.b * 3";
+    bit[36] breg_4 "state.b * 4";
+    bit[36] breg_8 "state.b * 8";
+    bit[36] breg_c "state.b * 12";
+    bit[36] mux_0123 "Selected state.b*(0/1/2/3) for first adder";
+    bit[36] mux_048c "Selected state.b*(0/4/8/12) for first adder";
+    bit[36] mult_data "36-bit multiply result: state.b * 0-15";
+
+    bit[3] shift     "Amount to shift multiply result by (in 4-bit quanta)";
+    bit[64] mult_shf "Result of multiply shifted so that it is state.b * (0-15) << (shift*4)";
+
+    bit[32] add_l_in_0;
+    bit[32] add_l_in_1;
+
+    t_add_h_0_src add_h_0_src "Adder high input 0 source - -a input, accumulator high or zero"; // could we use NOT of a input and carry in?
+    bit[32] add_h_in_0;
+
+    t_add_h_1_src add_h_1_src "Adder high input 1 source - -b input, mult_shf high or zero"; // canout use NOT of B if we use it before unless we hack carries in
+    bit[32] add_h_in_1;
+
+    bit[33] add_l "Adder low result including its carry out";
+    bit add_l_carry "Carry out from low adder";
+    bit acc_carry_low_to_high "If asserted then carry from low 32 bit result to high 32 bit result";
+
+    bit add_h_carry_in "Carry in to high adder; asserted if add_l[32] and acc_carry_low_to_high";
+    bit[33] add_h "Adder high result including its carry out";
+    bit add_h_carry "Carry out from high adder";
+
+    bit completed;
+
+    bit     result_neg;
+    bit[32] result_acc;
+} t_dp_combs;
+
+/*t t_dp_state */
+typedef struct {
+    bit[5] stage;
+    t_muldiv_fsm fsm_state;
+    bit[32] areg;
+    bit[32] breg;
+    bit[32] acc_low;
+    bit[32] acc_high;
+    bit[2] op_signed;
+    bit    negate_remainder;
+    bit    negate_result;
+    t_result_type result_type;
+} t_dp_state;
+
+/*t t_dec_fuse_combs
+ */
+typedef struct {
+    bit match "Asserted if the current decode registers match the last op";
+} t_dec_fuse_combs;
+
+/*t t_dec_fuse
+ */
+typedef struct {
+    bit[5] rs1;
+    bit[5] rs2;
+    bit was_mulh;
+    bit was_divu;
+    bit was_divs;
+} t_dec_fuse;
+
+/*a Module
+ */
+module riscv_i32_muldiv( clock clk,
+                         input bit reset_n,
+                         input t_riscv_i32_coproc_controls  coproc_controls,
+                         output t_riscv_i32_coproc_response coproc_response,
+                         input t_riscv_config riscv_config
+)
+"""
+
+Multiplication:
+
+Consider multiplication of two 3-bit numbers a and b (hence octal)
+
+A straight (unsigned) view of a value X as Xs.Xb  is Xb+4*Xs (Xs is sign bit, Xb remaining bits)
+A signed              view of a value X as Xs.Xb  is Xb-4*Xs
+Hence one can consider Xsigned = Xunsigned - 8*Xs
+
+Consider Runsigned = Xunsigned * Yunsigned
+Then Xsigned * Ysigned = (Xunsigned - 8*Xs) * (Yunsigned - 8*Ys)
+                       = (Xunsigned*Yunsigned) + 64*Xs*Ys -8*(Xs*Yunsigned + Ys*Xunsigned)
+(mod 64)               = Runsigned             -8*(Xs*Yunsigned + Ys*Xunsigned)  
+
+Xunsigned * Yunsigned has the following multiplication table:
+
+    0    1    2    3    4    5    6    7    
+0   0    0    0    0    0    0    0    0
+1   0    1    2    3    4    5    6    7    
+2   0    2    4    6   10   12   14   16
+3   0    3    6   11   14   17   22   25
+4   0    4   10   14   20   24   30   34
+5   0    5   12   17   24   31   36   43
+6   0    6   14   22   30   36   44   52
+7   0    7   16   25   34   43   52   61
+
+If both are signed then we have the following correction to add -8*(Xs*Yunsigned + Ys*Xunsigned) (in decimal...)
+
+    0    1    2    3    4    5    6    7    
+0   0    0    0    0    0    0    0    0
+1   0    0    0    0   -8   -8   -8   -8
+2   0    0    0    0  -16  -16  -16  -16
+3   0    0    0    0  -24  -24  -24  -24
+4   0   -8  -16  -24  -64  -72  -80  -88
+5   0   -8  -16  -24  -72  -80  -88  -96
+6   0   -8  -16  -24  -80  -88  -96 -104
+7   0   -8  -16  -24  -88  -96 -104 -112
+
+And in octal (addition)
+
+    0    1    2    3    4    5    6    7    
+0   0    0    0    0    0    0    0    0
+1   0    0    0    0   70   70   70   70
+2   0    0    0    0   60   60   60   60
+3   0    0    0    0   50   50   50   50
+4   0   70   60   50    0   70   60   50
+5   0   70   60   50   70   60   50   40
+6   0   70   60   50   60   50   40   30
+7   0   70   60   50   50   40   30   20
+
+If they are both signed (7==-1, 6==-2, 5=--3, 4==-4) we have the following multiplication table:
+
+    0    1    2    3    4    5    6    7
+0   0    0    0    0    0    0    0    0
+1   0    1    2    3   74   75   76   77
+2   0    2    4    6   70   72   74   76
+3   0    3    6   11   64   67   72   75
+4   0   74   70   64   20   14   10    4
+5   0   75   72   67   14   11    6    3
+6   0   76   74   72   10    6    4    2
+7   0   77   76   75    4    3    2    1
+
+If the column (X) in unsigned and the row is signed then we have the following correction to add -8*Ys*Xunsigned (in decimal...)
+
+    0    1    2    3    4    5    6    7    
+0   0    0    0    0    0    0    0    0
+1   0    0    0    0    0    0    0    0
+2   0    0    0    0    0    0    0    0
+3   0    0    0    0    0    0    0    0
+4   0   -8  -16  -24  -32  -40  -48  -56
+5   0   -8  -16  -24  -32  -40  -48  -56
+6   0   -8  -16  -24  -32  -40  -48  -56
+7   0   -8  -16  -24  -32  -40  -48  -56
+
+And in octal (addition)
+
+    0    1    2    3    4    5    6    7    
+0   0    0    0    0    0    0    0    0
+1   0    0    0    0    0    0    0    0
+2   0    0    0    0    0    0    0    0
+3   0    0    0    0    0    0    0    0
+4   0   70   60   50   40   30   20   10
+5   0   70   60   50   40   30   20   10
+6   0   70   60   50   40   30   20   10
+7   0   70   60   50   40   30   20   10
+
+
+Hence the multiplication table:
+
+    0    1    2    3    4    5    6    7
+0   0    0    0    0    0    0    0    0
+1   0    1    2    3    4    5    6    7
+2   0    2    4    6   10   12   14   16
+3   0    3    6   11   14   17   22   25
+4   0   74   70   64   60   54   50   44
+5   0   75   72   67   64   61   56   53
+6   0   76   74   72   70   66   64   62
+7   0   77   76   75   74   73   72   71
+
+
+Hence the multiplication of two 32-bit numbers X and Y, using a 64-bit accumulator A, can be performed by setting A initially to:
+
+ 0 for unsigned*unsigned
+ -2^32*(X[31]?Y) for X signed Y unsigned
+ -2^32*(Y[31]?X) for Y signed X unsigned
+ -2^32*(Y[31]?X[31;0] + X[31]?Y[31;0]) for both signed.
+
+The operation of the multiply then requires a 64-bit accumulator
+
++1 +4 provides 0, 1, 4, 5 (single 35-bit adder)
+(stage1_0 = 0; stage1_1 = (3b0,in); stage1_4 = (1b0,in,2b0); stage1_5 = stage1_1 + stage1_4;)
+
++1 +4 with optional double provides 0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15 (one more 36-bit adders)
+(0 = 0+0; 2=0+stage1_1_dbl; 3=stage1_1+stage1_1_dbl;
+stage2_add_in_0 = mux(stage1_0, stage1_1, stage1_4, stage1_5)
+stage2_add_in_1 = mux(stage1_0, stage1_1, stage1_4, stage1_5)<<1
+
+
+Division
+
+Unsigned division/remainder (column / row)
+
+    0    1    2    3    4    5    6    7
+0  7/0  7/0  7/0  7/0  7/0  7/0  7/0  7/0
+1  0/0  1/0  2/0  3/0  4/0  5/0  6/0  7/0
+2  0/0  0/1  1/0  1/1  2/0  2/1  3/0  3/1
+3  0/0  0/1  0/2  1/0  1/1  1/2  2/0  2/1
+4  0/0  0/1  0/2  0/3  1/0  1/1  1/2  1/3
+5  0/0  0/1  0/2  0/3  0/4  1/0  1/1  1/2
+6  0/0  0/1  0/2  0/3  0/4  0/5  1/0  1/1
+7  0/0  0/1  0/2  0/3  0/4  0/5  0/6  1/0
+
+Signed division/remainder (column / row) (x86 except div by 0)
+Note: x86, C99 - sign of remainder = sign of dividend
+
+    0    1    2    3    4    5    6    7
+0  7/0  7/0  7/0  7/0  7/0  7/0  7/0  7/0
+1  0/0  1/0  2/0  3/0  4/0  5/0  6/0  7/0
+2  0/0  0/1  1/0  1/1  6/0  7/7  7/0  0/7
+3  0/0  0/1  0/2  1/0  7/7  7/0  0/6  0/7
+4  0/0  0/1  0/2  0/3  1/0  0/5  0/6  0/7
+5  0/0  0/1  0/2  7/0  1/7  1/0  0/6  0/7
+6  0/0  0/1  7/0  7/1  2/0  1/7  1/0  0/7
+7  0/0  7/0  6/0  5/0  4/0  3/0  2/0  1/0
+
+For positive/positive one can use unsigned division directly
+For negative/negative one can do -d/-r, and negate the remainder
+For negative/positive one can do -d/r, then negate the result and the remainder
+For positive/negative one can do d/-r, then negate the result
+
+So the first cycle of a divide prepares 'positive' d and r and records the signs (as required)
+
+The multiply requires three adders
+One 34 bit; one 36 bit, one 64 bit.
+Divide requires compare; it could do 3 compares per cycle, or just one to start with
+
+We have a multiplier register that gets shifted; this can be the divisor that gets shifted
+
+Multiply then occurs with the following states:
+
+Init : adder high 0 is zero or abs(a) if signed and a negative; adder high 1 is zero or abs(b) if signed and b negative; a_reg <= rs1, b_reg <= rs2
+Step (until completed) : a_reg = a_reg>>4; mult=a_reg&15; shf=stage; adder is shifter + acc, with carry chain. complete if a_reg&15 will be 0
+Result valid: accumulator has result (present top or bottom half)
+
+Divide occurs with the following states:
+
+Init
+Shift
+Step (until completed)
+Result valid (provides result signing stuff)
+
+Hence the design is for a data pipeline with (for multiply):
+
+a_reg - contains multiplier
+b_reg - contains multiplicand
+accumulator - contains 64-bit result of multiply
+            - initialize with 0 for unsigned*unsigned; -2^32*(X[31]?Y) for X signed Y unsigned; -2^32*(Y[31]?X) for Y signed X unsigned; -2^32*(Y[31]?X[31;0] + X[31]?Y[31;0]) for both signed
+mult_data = b_reg * bottom 4 bits of a_reg
+mult_shf  = b_reg * bottom 4 bits of a_reg shifted to be in correct position for accumulation (i.e. shift left by 4*stage)
+64-bit adder of accumulator plus mult_shf
+
+Result is accumulator - pick top or bottom 32 bits as required
+
+For divide it becomes:
+
+a_reg - contains abs(a) (if signed) else a (dividend)
+b_reg - contains -abs(b) (if signed) else -b (divisor)
+accumulator - bottom 32 bits contains remainder (initialized to a_reg)
+            - top 32 bits contain quotient (initialized to zero)
+mult_data = b_reg << bottom 2 bits of stage
+mult_shf  = b_reg shifted to be in correct position for subtraction from remainder
+32-bit adder of low accumulator plus mult_shf; if >=0 then must update accumulator low and set bit in accumulator high
+32-bit 'set bit N of' of high accumulator to build quotient if 
+
+Quotient result is accumulator high, or negated accumulator high if signed and signs of two inputs differ
+Remainder result is accumulator low, or negated accumulator low if signed and dividend input was negative
+
+"""
+{
+
+    /*b Signals */
+    default clock clk;
+    default reset active_low reset_n;
+    comb t_dp_combs dp_combs         "Combinatorials used in the module, not exported as the decode";
+    clocked t_dp_state dp_state = {*=0} "State for the datapath and state machine";
+    comb t_dec_fuse_combs dec_fuse_combs "Combinatorials used to determine fusing";
+    clocked t_dec_fuse dec_fuse  = {*=0} "State for fusing operations, if supported";
+
+    /*b RS1/RS2 datapath */
+    rs1_rs2_datapath """
+    Code to select +/-/abs(rs1) and +/-/abs(rs2)
+
+    This code is all that operates on rs1/rs2.
+    """ : {
+        /*b Determine if rs1/rs2 are negative, and negate them
+         */
+        dp_combs.rs1_is_negative = coproc_controls.alu_rs1[31];
+        dp_combs.rs2_is_negative = coproc_controls.alu_rs2[31];
+
+        dp_combs.neg_rs1 =  - coproc_controls.alu_rs1;
+        dp_combs.neg_rs2 =  - coproc_controls.alu_rs2;
+
+        /*b Select +/- of rs1/rs2 as required
+         */
+        dp_combs.sel_rs1 = coproc_controls.alu_rs1;
+        dp_combs.sel_rs2 = coproc_controls.alu_rs2;
+        if (dp_combs.sel_neg_rs1) {
+            dp_combs.sel_rs1 = dp_combs.neg_rs1;
+        }
+        if (dp_combs.sel_neg_rs2) {
+            dp_combs.sel_rs2 = dp_combs.neg_rs2;
+        }
+
+        /*b Determine bit number of top bit set of areg and breg, to make divide operation be as short as possible
+         */
+        dp_combs.areg_top_bit_set = 0;
+        dp_combs.breg_top_bit_set = 0;
+        for (i; 32) {
+            if (dp_state.areg[i]) { dp_combs.areg_top_bit_set = i; }
+            if (dp_state.breg[i]) { dp_combs.breg_top_bit_set = i; }
+        }
+    }
+
+    /*b Multiply/divide datapath */
+    datapath """
+    mult_data [36 bits] = a 4-bit multiply of breg by sel0123/sel048c
+    mult_shf  [64 bits] = mult_data << 4*shift
+    i.e.
+    mult_shf = breg << N (if sel0123/sel048c has a single bit K set then N=K + shift)
+    or
+    mult_shf = (breg * M) << N (M = {sel048c, sel0123})
+    or
+    mult_shf = 0 (if sel0123, sel048c = 0)
+
+    add_l = mult_shf[32;0] + acc[32;0]
+
+    For divide step,   add_l is remainder + ((-divisor)<<N)
+    For multiply step, add_l is acc_l + (breg*(4 bits of areg))
+
+    add_h = 0/-rs1/acc_h + 0/-rs2/shf_h
+
+    For multiply init  add_h is 0/-rs1 + 0/-rs2 as the initial multiplier accumulator
+    For multiply step, add_h is acc_h + (breg*(4 bits of areg))
+    For divide shift,  add_h is 0 + 0
+    For divide step,   add_h is acc_h + 0
+
+    """ : {
+        /*b mult_data: 4-bit multiply of breg by dp_combs.sel0123 and sel048c */
+        dp_combs.breg_0 = 0;
+        dp_combs.breg_1 = bundle(4b0, dp_state.breg);
+        dp_combs.breg_2 = bundle(3b0, dp_state.breg, 1b0);
+        dp_combs.breg_4 = bundle(2b0, dp_state.breg, 2b0);
+        dp_combs.breg_8 = bundle(1b0, dp_state.breg, 3b0);
+        dp_combs.breg_3 = dp_combs.breg_2 + dp_combs.breg_1;    // 34-bit adder
+        dp_combs.breg_c = bundle(dp_combs.breg_3[34;0], 2b0);
+
+        dp_combs.mux_0123 = dp_combs.breg_0;
+        full_switch (dp_combs.sel0123) {
+        case 0: { dp_combs.mux_0123 = dp_combs.breg_0; }
+        case 1: { dp_combs.mux_0123 = dp_combs.breg_1; }
+        case 2: { dp_combs.mux_0123 = dp_combs.breg_2; }
+        case 3: { dp_combs.mux_0123 = dp_combs.breg_3; }
+        }
+
+        dp_combs.mux_048c = dp_combs.breg_0;
+        full_switch (dp_combs.sel048c) {
+        case 0: { dp_combs.mux_048c = dp_combs.breg_0; }
+        case 1: { dp_combs.mux_048c = dp_combs.breg_4; }
+        case 2: { dp_combs.mux_048c = dp_combs.breg_8; }
+        case 3: { dp_combs.mux_048c = dp_combs.breg_c; }
+        }
+        dp_combs.mult_data = dp_combs.mux_0123 + dp_combs.mux_048c; // 36-bit adder
+
+        /*b Shifter, shifting by dp_combs.shift */
+        dp_combs.mult_shf = 0;
+        full_switch (dp_combs.shift[3;0]) {
+        case 0: { dp_combs.mult_shf = bundle(28b0,  dp_combs.mult_data     ); }
+        case 1: { dp_combs.mult_shf = bundle(24b0,  dp_combs.mult_data,  4b0); }
+        case 2: { dp_combs.mult_shf = bundle(20b0,  dp_combs.mult_data,  8b0); }
+        case 3: { dp_combs.mult_shf = bundle(16b0,  dp_combs.mult_data, 12b0); }
+        case 4: { dp_combs.mult_shf = bundle(12b0,  dp_combs.mult_data, 16b0); }
+        case 5: { dp_combs.mult_shf = bundle( 8b0,  dp_combs.mult_data, 20b0); }
+        case 6: { dp_combs.mult_shf = bundle( 4b0,  dp_combs.mult_data, 24b0); }
+        case 7: { dp_combs.mult_shf = bundle(       dp_combs.mult_data, 28b0); }
+        }
+
+        /*b Adder input selectors using dp_combs.add_X_N_src */
+        dp_combs.add_l_in_0 = dp_combs.mult_shf[32;0];
+        dp_combs.add_l_in_1 = dp_state.acc_low;
+
+        dp_combs.add_h_in_0 = 0;
+        part_switch (dp_combs.add_h_0_src) {
+        case add_h_0_src_zero:    { dp_combs.add_h_in_0 = 0; }
+        case add_h_0_src_acc:     { dp_combs.add_h_in_0 = dp_state.acc_high; }
+        case add_h_0_src_neg_rs1: { dp_combs.add_h_in_0 = dp_combs.neg_rs1; }
+        }
+        dp_combs.add_h_in_1 = 0;
+        part_switch (dp_combs.add_h_1_src) {
+        case add_h_1_src_zero:    { dp_combs.add_h_in_1 = 0; }
+        case add_h_1_src_shf:     { dp_combs.add_h_in_1 = dp_combs.mult_shf[32;32]; }
+        case add_h_1_src_neg_rs2: { dp_combs.add_h_in_1 = dp_combs.neg_rs2; }
+        }
+
+        /*b Adder using acc_carry_low_to_high */
+        dp_combs.add_l = bundle(1b0, dp_combs.add_l_in_0) + bundle(1b0, dp_combs.add_l_in_1);
+        dp_combs.add_l_carry = dp_combs.add_l[32];
+        dp_combs.add_h_carry_in = dp_combs.acc_carry_low_to_high && dp_combs.add_l_carry;
+        dp_combs.add_h = bundle(1b0, dp_combs.add_h_in_0) + bundle(1b0, dp_combs.add_h_in_1) + bundle(32b0, dp_combs.add_h_carry_in) ; // 32-bit add with carry out
+        dp_combs.add_h_carry = dp_combs.add_h[32];
+
+        /*b All done */
+        
+    }
+
+    /*b Control */
+    control """
+    """ : {
+        dp_combs.sel0123 = dp_state.breg[2;0];
+        dp_combs.sel048c = dp_state.breg[2;2];
+        dp_combs.shift = dp_state.stage[3;0];
+        dp_combs.add_h_0_src = add_h_0_src_acc; // or zero, acc, neg_a
+        dp_combs.add_h_1_src = add_h_1_src_shf; // or zero, shf, neg_b
+        dp_combs.acc_carry_low_to_high = 0;
+        dp_combs.sel_neg_rs1 = 0;
+        dp_combs.sel_neg_rs2 = 0;
+        dp_combs.completed = 0;
+
+        part_switch (dp_state.fsm_state) {
+        case muldiv_mul_init: { // use adder/shifter to generate initial accumulation (if signed)
+            dp_combs.sel0123 = 0; // makes shf be zero
+            dp_combs.sel048c = 0; // makes shf be zero
+            dp_combs.add_h_0_src = add_h_0_src_zero; // OR neg_a if B signed and negative
+            dp_combs.add_h_1_src = add_h_1_src_zero; // OR neg_b if A signed and negative
+            if (dp_state.op_signed[0] && dp_combs.rs1_is_negative) {
+                dp_combs.add_h_1_src = add_h_1_src_neg_rs2;
+            }
+            if (dp_state.op_signed[1] && dp_combs.rs2_is_negative) {
+                dp_combs.add_h_0_src = add_h_0_src_neg_rs1;
+            }
+            dp_state.stage <= 0;
+            dp_state.areg  <= dp_combs.sel_rs1;
+            dp_state.breg  <= dp_combs.sel_rs2;
+            dp_state.acc_low  <= 0;
+            dp_state.acc_high <= dp_combs.add_h[32;0];
+            dp_state.negate_result    <= 0;
+            dp_state.negate_remainder <= 0;
+        }
+        case muldiv_mul_step: {  // use adder/shifter to accumulate result
+            dp_combs.sel0123 = dp_state.areg[2;0];
+            dp_combs.sel048c = dp_state.areg[2;2];
+            dp_combs.shift = dp_state.stage[3;0];
+            dp_combs.acc_carry_low_to_high = 1;
+            dp_combs.add_h_0_src = add_h_0_src_acc;
+            dp_combs.add_h_1_src = add_h_1_src_shf;
+            dp_combs.completed = (dp_state.areg[28;4]==0);
+            dp_state.stage <= dp_state.stage + 1;
+            dp_state.areg  <= dp_state.areg >> 4;
+            dp_state.acc_low  <= dp_combs.add_l[32;0];
+            dp_state.acc_high <= dp_combs.add_h[32;0];
+        }
+        case muldiv_div_init: {  // does not use adder / shifter
+            dp_state.negate_result    <= 0;
+            dp_state.negate_remainder <= 0;
+            dp_state.areg  <= dp_combs.sel_rs1;
+            dp_state.breg  <= dp_combs.sel_rs2;
+            if (dp_state.op_signed[0]) { // truncated signed division
+                if (dp_combs.rs1_is_negative) { // negative remainder if dividend is negative
+                    dp_combs.sel_neg_rs1 = 1;
+                    dp_state.negate_remainder <= 1;
+                }
+                if (dp_combs.rs2_is_negative) { // use abs of divisor to find its top bit set
+                    dp_combs.sel_neg_rs2 = 1;
+                }
+                if (dp_combs.rs1_is_negative != dp_combs.rs2_is_negative) {
+                    dp_state.negate_result <= 1; // negative result if signs differ
+                }
+            }
+
+        }
+        case muldiv_div_shift: {  // Does nothing really - should suck in top_bit_set from div_init
+            dp_combs.sel_neg_rs2 = 1; // Get -(abs(b)) in breg
+            if (dp_state.op_signed[0] && dp_combs.rs2_is_negative) {
+                dp_combs.sel_neg_rs2 = 0; // Use actual rs2 if it is already negative and signed
+            }
+            dp_combs.acc_carry_low_to_high = 0;
+            dp_combs.add_h_0_src = add_h_0_src_zero;
+            dp_combs.add_h_1_src = add_h_1_src_zero;
+            dp_state.breg     <= dp_combs.sel_rs2;
+            dp_state.acc_low  <= dp_state.areg;
+            dp_state.acc_high <= dp_combs.add_h[32;0];
+            if (dp_state.breg==0) {
+                dp_state.acc_high <= -1;
+                dp_state.negate_result <= 0;
+                dp_combs.completed = 1;
+            }
+            dp_state.stage <= dp_combs.areg_top_bit_set - dp_combs.breg_top_bit_set;
+            if (dp_combs.breg_top_bit_set > dp_combs.areg_top_bit_set) { // dividend less than divisor - short-cut to end
+                dp_state.stage <= 0; // Complete with div_zero or b>a if b_shift negative
+                dp_combs.completed = 1;
+            }
+        }
+        case muldiv_div_step: {  // remainder += (-divisor)<<stage (if positive or zero); quotient |= (1<<stage) (if necessary)
+            dp_combs.sel0123 = 0;
+            dp_combs.sel048c = 0;
+            if (dp_state.stage[2;0]==0) {dp_combs.sel0123[0] = 1;}
+            if (dp_state.stage[2;0]==1) {dp_combs.sel0123[1] = 1;}
+            if (dp_state.stage[2;0]==2) {dp_combs.sel048c[0] = 1;}
+            if (dp_state.stage[2;0]==3) {dp_combs.sel048c[1] = 1;}
+            dp_combs.shift = dp_state.stage[3;2];
+
+            dp_combs.add_h_0_src = add_h_0_src_acc; // top half is acc top unchanged
+            dp_combs.add_h_1_src = add_h_1_src_zero;
+            dp_combs.acc_carry_low_to_high = 0; // two independent 32-bit values in accumulator
+
+            if (dp_combs.add_l_carry) { // was acc_sum_higher?
+                dp_state.acc_low  <= dp_combs.add_l[32;0];
+                dp_state.acc_high[dp_state.stage] <= 1;
+            }
+            dp_state.stage <= dp_state.stage - 1;
+            if (dp_state.stage==0) {
+                dp_combs.completed = 1;
+            }
+        }
+        }
+        /*b All done */
+    }
+
+    /*b Coprocessor <> Mul/Div state machine */
+    state_machine """
+    The state machine is simple enough.
+
+    The starting point is either mul_init or div_init; however, for
+    mul after mulh and rem[us] after div[us] the second can go
+    straight to complete.
+    """ : {
+        full_switch (dp_state.fsm_state) {
+        case muldiv_idle: {
+            dp_state.fsm_state <= dp_state.fsm_state;
+        }
+        case muldiv_mul_init: {
+            if (!coproc_controls.alu_cannot_start) {
+                dp_state.fsm_state <= muldiv_mul_step;
+            }
+        }
+        case muldiv_mul_step: {
+            if (dp_combs.completed) {
+                dp_state.fsm_state <= muldiv_complete;
+            }
+        }
+        case muldiv_div_init: {
+            if (!coproc_controls.alu_cannot_start) {
+                dp_state.fsm_state <= muldiv_div_shift;
+            }
+        }
+        case muldiv_div_shift: {
+            dp_state.fsm_state <= muldiv_div_step;
+            if (dp_combs.completed) { // early completion if divide-by-zero or x/y where (int log2(x)) < (int log2(y))
+                dp_state.fsm_state <= muldiv_complete;
+            }
+        }
+        case muldiv_div_step: {
+            if (dp_combs.completed) {
+                dp_state.fsm_state <= muldiv_complete;
+            }
+        }
+        case muldiv_complete: {
+            if (!coproc_controls.alu_cannot_complete) {
+                dp_state.fsm_state <= muldiv_idle;
+            }
+        }
+        }
+        dec_fuse_combs.match = (dec_fuse.rs1==coproc_controls.dec_idecode.rs1) && (dec_fuse.rs2 == coproc_controls.dec_idecode.rs2);
+        if ( !coproc_controls.dec_to_alu_blocked &&
+             coproc_controls.dec_idecode_valid) {
+            dec_fuse.was_mulh <= 0;
+            dec_fuse.was_divu <= 0;
+            dec_fuse.was_divs <= 0;
+            if (coproc_controls.dec_idecode.op == riscv_op_muldiv)  {
+                dec_fuse.rs1 <= coproc_controls.dec_idecode.rs1;
+                dec_fuse.rs2 <= coproc_controls.dec_idecode.rs2;
+                dp_state.op_signed <= 0;
+                dp_state.result_type <= result_type_low;
+                full_switch (coproc_controls.dec_idecode.subop) {
+                case riscv_subop_mull:   {
+                    dp_state.fsm_state <= muldiv_mul_init;
+                    dp_state.result_type <= result_type_low;
+                    if (dec_fuse.was_mulh && dec_fuse_combs.match) {
+                        dp_state.fsm_state <= muldiv_complete;
+                    }
+                }
+                case riscv_subop_mulhss: {
+                    dp_state.fsm_state <= muldiv_mul_init;
+                    dp_state.result_type <= result_type_high;
+                    dp_state.op_signed <= 2b11;
+                    dec_fuse.was_mulh <= 1;
+                }
+                case riscv_subop_mulhsu: {
+                    dp_state.fsm_state <= muldiv_mul_init;
+                    dp_state.result_type <= result_type_high;
+                    dp_state.op_signed <= 2b01;
+                    dec_fuse.was_mulh <= 1;
+                }
+                case riscv_subop_mulhu:  {
+                    dp_state.fsm_state <= muldiv_mul_init;
+                    dp_state.result_type <= result_type_high;
+                    dp_state.op_signed <= 2b00;
+                    dec_fuse.was_mulh <= 1;
+                }
+                case riscv_subop_divs:   {
+                    dp_state.fsm_state <= muldiv_div_init;
+                    dp_state.result_type <= result_type_high;
+                    dp_state.op_signed <= 2b11;
+                    dec_fuse.was_divs <= 1;
+                }
+                case riscv_subop_divu:   {
+                    dp_state.fsm_state <= muldiv_div_init;
+                    dp_state.result_type <= result_type_high;
+                    dec_fuse.was_divu <= 1;
+                }
+                case riscv_subop_rems:   {
+                    dp_state.fsm_state <= muldiv_div_init;
+                    dp_state.result_type <= result_type_low;
+                    dp_state.op_signed <= 2b11;
+                    if (dec_fuse.was_divs && dec_fuse_combs.match) {
+                        dp_state.fsm_state <= muldiv_complete;
+                    }
+                }
+                case riscv_subop_remu:   {
+                    dp_state.fsm_state <= muldiv_div_init;
+                    dp_state.result_type <= result_type_low;
+                    if (dec_fuse.was_divu && dec_fuse_combs.match) {
+                        dp_state.fsm_state <= muldiv_complete;
+                    }
+                }
+                default: {
+                    dp_state.result_type <= result_type_high;
+                }
+                }
+                if ( (coproc_controls.dec_idecode.rs1 == coproc_controls.dec_idecode.rd) ||
+                     (coproc_controls.dec_idecode.rs2 == coproc_controls.dec_idecode.rd) ) {
+                    dec_fuse.was_mulh <= 0;
+                    dec_fuse.was_divu <= 0;
+                    dec_fuse.was_divs <= 0;
+                }
+            }
+        }
+        if (coproc_controls.alu_flush_pipeline) {
+            dp_state.fsm_state <= muldiv_idle;
+            dec_fuse.was_mulh <= 0;
+            dec_fuse.was_divu <= 0;
+            dec_fuse.was_divs <= 0;
+        }
+        if (i32m_fuse_force_disable || !riscv_config.i32m_fuse) {
+            dec_fuse <= {*=0};
+        }
+    }
+
+    /*b Outputs */
+    outputs """
+    """ : {
+        dp_combs.result_acc = dp_state.acc_low;
+        dp_combs.result_neg = dp_state.negate_remainder;
+        if (dp_state.result_type == result_type_high) {
+            dp_combs.result_acc = dp_state.acc_high;
+            dp_combs.result_neg = dp_state.negate_result;
+        }
+        coproc_response.result = dp_combs.result_acc;
+        if (dp_combs.result_neg) {
+            coproc_response.result = -dp_combs.result_acc;
+        }
+
+        coproc_response.cannot_complete = 0;
+        coproc_response.result_valid = 1;
+        if (dp_state.fsm_state != muldiv_complete) {
+            coproc_response.result_valid = 0;
+            coproc_response.result       = 0;
+        }
+        if ((dp_state.fsm_state!=muldiv_complete) && (dp_state.fsm_state!=muldiv_idle)) {
+            coproc_response.cannot_complete = 1;
+        }
+        coproc_response.cannot_start = 0;
+    }
+
+    /*b All done */
+}
