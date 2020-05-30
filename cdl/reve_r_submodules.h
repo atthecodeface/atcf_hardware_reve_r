@@ -18,9 +18,9 @@
 
 /*a Includes
  */
-include "cpu/riscv/riscv.h"
-include "cpu/riscv/riscv_pipeline_types.h"
-include "cpu/riscv/riscv_internal_types.h"
+include "reve_r.h"
+include "reve_r_pipeline_types.h"
+include "reve_r_internal_types.h"
 
 /*a Modules
  */

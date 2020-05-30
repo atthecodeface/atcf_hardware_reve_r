@@ -1,4 +1,4 @@
-/** @copyright (C) 2016-2017,  Gavin J Stark.  All rights reserved.
+/** @copyright (C) 2016-2020,  Gavin J Stark.  All rights reserved.
  *
  * @copyright
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,9 +21,8 @@
 
 /*a Includes
  */
-include "cpu/riscv/riscv_config.h"
-include "cpu/riscv/riscv_internal_types.h"
-include "cpu/riscv/riscv.h"
+include "reve_r.h"
+include "reve_r_internal_types.h"
 
 /*a Types
  */
@@ -82,11 +81,11 @@ typedef struct {
 
 /*a Module
  */
-module riscv_i32_alu( input t_riscv_i32_decode      idecode,
-                      input t_riscv_word            pc,
-                      input t_riscv_word            rs1,
-                      input t_riscv_word            rs2,
-                      output t_riscv_i32_alu_result alu_result
+module reve_r_alu( input t_riscv_i32_decode      idecode,
+                   input t_riscv_word            pc,
+                   input t_riscv_word            rs1,
+                   input t_riscv_word            rs2,
+                   output t_riscv_i32_alu_result alu_result
 )
 """
 

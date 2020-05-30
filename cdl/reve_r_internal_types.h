@@ -18,8 +18,8 @@
 
 /*a Includes
  */
-include "cpu/riscv/riscv.h"
-include "cpu/riscv/riscv_config.h"
+include "reve_r.h"
+include "reve_r_config.h"
 
 /*a Constants
  */

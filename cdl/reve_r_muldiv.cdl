@@ -21,8 +21,8 @@
 
 /*a Includes
  */
-include "cpu/riscv/riscv_internal_types.h"
-include "cpu/riscv/riscv.h"
+include "reve_r_internal_types.h"
+include "reve_r.h"
 
 /*a Constants - configuration */
 constant integer i32m_fuse_force_disable=0;
@@ -152,11 +152,11 @@ typedef struct {
 
 /*a Module
  */
-module riscv_i32_muldiv( clock clk,
-                         input bit reset_n,
-                         input t_riscv_i32_coproc_controls  coproc_controls,
-                         output t_riscv_i32_coproc_response coproc_response,
-                         input t_riscv_config riscv_config
+module reve_r_muldiv( clock clk,
+                      input bit reset_n,
+                      input t_riscv_i32_coproc_controls  coproc_controls,
+                      output t_riscv_i32_coproc_response coproc_response,
+                      input t_riscv_config riscv_config
 )
 """
 

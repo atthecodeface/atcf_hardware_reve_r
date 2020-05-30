@@ -21,10 +21,9 @@
 
 /*a Includes
  */
-include "cpu/riscv/riscv_internal_types.h"
-include "cpu/riscv/riscv.h"
-include "cpu/riscv/riscv_config.h"
-include "cpu/riscv/riscv_submodules.h"
+include "reve_r.h"
+include "reve_r_internal_types.h"
+include "reve_r_submodules.h"
 
 /*a Types
  */
@@ -41,9 +40,9 @@ typedef struct {
 
 /*a Module
  */
-module riscv_i32_decode( input t_riscv_i32_inst instruction,
-                         output t_riscv_i32_decode idecode,
-                         input t_riscv_config riscv_config
+module reve_r_i32_decode( input t_riscv_i32_inst instruction,
+                          output t_riscv_i32_decode idecode,
+                          input t_riscv_config riscv_config
 )
 """
 Instruction decoder for RISC-V I32 instruction set.
