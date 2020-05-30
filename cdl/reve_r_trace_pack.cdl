@@ -21,8 +21,7 @@
 
 /*a Includes
  */
-include "cpu/riscv/riscv_internal_types.h"
-include "cpu/riscv/riscv.h"
+include "reve_r_trace.h"
 
 /*a Types
  */
@@ -45,7 +44,7 @@ typedef struct {
 
 /*a Module
  */
-module riscv_i32_trace_pack( clock clk            "Free-running clock",
+module reve_r_trace_pack( clock clk            "Free-running clock",
                              input bit reset_n     "Active low reset",
                              input t_riscv_packed_trace_control trace_control      "Control of trace",
                              input t_riscv_i32_trace          trace        "Trace signals",

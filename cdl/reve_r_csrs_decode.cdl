@@ -24,7 +24,7 @@ include "reve_r_internal_types.h"
 include "reve_r_config.h"
 
 /*a Module */
-module riscv_csrs_decode( input t_riscv_csr_access    csr_access    "RISC-V CSR access, combinatorially decoded",
+module reve_r_csrs_decode( input t_riscv_csr_access    csr_access    "RISC-V CSR access, combinatorially decoded",
                           output t_riscv_csr_decode   csr_decode    "CSR response (including read data), from the current @a csr_access"
     )
 """
