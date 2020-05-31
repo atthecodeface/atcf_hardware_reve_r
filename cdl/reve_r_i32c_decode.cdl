@@ -22,7 +22,7 @@
 /*a Includes
  */
 include "reve_r.h"
-include "reve_r_internal_types.h"
+include "reve_r_decode.h"
 
 /*a Types
  */
@@ -33,23 +33,23 @@ typedef struct {
     bit[5]         rd_q12    "Destination register for quadrant 1/2 instructions";
     bit[5]         rs1       "Source 1 register (unshortened)";
     bit[5]         rs2       "Source 2 register (unshortened)";
-    t_riscv_word   imm_signed "Sign-extension word, basically instruction[31] replicated";
-    t_riscv_word   imm_ci_v1  "";
-    t_riscv_word   imm_clwsp  "";
-    t_riscv_word   imm_clui   "Immediate value for C.LUI instructions";
-    t_riscv_word   imm_caddi16sp  "";
-    t_riscv_word   imm_caddi4spn    "";
-    t_riscv_word   imm_cswsp    "";
-    t_riscv_word   imm_clwsw  "";
-    t_riscv_word   imm_cb     "";
-    t_riscv_word   imm_cj     "";
+    bit[32]   imm_signed "Sign-extension word, basically instruction[31] replicated";
+    bit[32]   imm_ci_v1  "";
+    bit[32]   imm_clwsp  "";
+    bit[32]   imm_clui   "Immediate value for C.LUI instructions";
+    bit[32]   imm_caddi16sp  "";
+    bit[32]   imm_caddi4spn    "";
+    bit[32]   imm_cswsp    "";
+    bit[32]   imm_clwsw  "";
+    bit[32]   imm_cb     "";
+    bit[32]   imm_cj     "";
 } t_combs;
 
 /*a Module
  */
-module reve_r_i32c_decode( input t_riscv_i32_inst instruction,
-                          output t_riscv_i32_decode idecode,
-                          input t_riscv_config riscv_config
+module reve_r_i32c_decode( input t_reve_r_inst instruction,
+                          output t_reve_r_decode idecode,
+                          input  t_reve_r_config riscv_config
 )
 """
 Instruction decoder for RISC-V I16 instruction set.
@@ -238,12 +238,12 @@ Note that custom opcodes are available
         idecode.rs2_valid = 0;
         idecode.rd_written = 0;
         idecode.csr_access = {*=0};
-        idecode.csr_access.access  = riscv_csr_access_none;
-        idecode.op = riscv_op_illegal;;
+        idecode.csr_access.access  = reve_r_csr_access_none;
+        idecode.op = reve_r_op_illegal;;
         idecode.illegal = 1;
-        idecode.subop = riscv_subop_valid; // so only opc has to be set to 'valid'
+        idecode.subop = reve_r_subop_valid; // so only opc has to be set to 'valid'
         idecode.funct7 = 0;
-        idecode.shift_op = riscv_shift_op_right_logical_zeros;
+        idecode.shift_op = reve_r_shift_op_right_logical_zeros;
 
         /*b Decode by quadrant (bottom 2 bits of instruction, 11 -> not 16-bit ) */
         part_switch(combs.quadrant) {
@@ -262,22 +262,22 @@ Note that custom opcodes are available
             part_switch(combs.opc) {
             case riscv_opcc0_addi4spn: { // add immediate (addi rd', x2, imm)
                 idecode.illegal = 0;
-                idecode.op      = riscv_op_alu;
-                idecode.subop   = riscv_subop_add;
+                idecode.op      = reve_r_op_alu;
+                idecode.subop   = reve_r_subop_add;
                 idecode.rs1     = riscv_abi_sp; // x2
                 idecode.rs1_valid = 1;
             }
             case riscv_opcc0_lw: { // load word (ld rd', imm(rs1'))
                 idecode.illegal = 0;
-                idecode.op         = riscv_op_mem;
-                idecode.subop = riscv_subop_lw;
+                idecode.op         = reve_r_op_mem;
+                idecode.subop = reve_r_subop_lw;
                 idecode.rs1_valid  = 1;
                 idecode.rd_written = 1;
             }
             case riscv_opcc0_sw: { // store word (st r2', imm(rs1'))
                 idecode.illegal = 0;
-                idecode.op = riscv_op_mem;
-                idecode.subop = riscv_subop_sw;
+                idecode.op = reve_r_op_mem;
+                idecode.subop = reve_r_subop_sw;
                 idecode.rs1_valid = 1;
                 idecode.rs2_valid = 1;
                 idecode.rd_written = 0;
@@ -299,32 +299,32 @@ Note that custom opcodes are available
             part_switch(combs.opc) {
             case riscv_opcc1_addi: { // addi rd, rd, imm (imm==0 reserved)
                 idecode.illegal    = 0;
-                idecode.op         = riscv_op_alu;
-                idecode.subop      = riscv_subop_add;
+                idecode.op         = reve_r_op_alu;
+                idecode.subop      = reve_r_subop_add;
                 idecode.rs1_valid  = 1;
                 idecode.rd_written = 1;
             }
             case riscv_opcc1_jal: { // jal x1, offset - FORCE rd to be riscv_abi_link
                 idecode.illegal    = 0;
-                idecode.op         = riscv_op_jal;
+                idecode.op         = reve_r_op_jal;
                 idecode.rd         = riscv_abi_link; // x1
                 idecode.rd_written = 1;
             }
             case riscv_opcc1_li: { // addi rd, x0, imm
                 idecode.illegal    = 0;
-                idecode.op         = riscv_op_alu;
-                idecode.subop      = riscv_subop_add;
+                idecode.op         = reve_r_op_alu;
+                idecode.subop      = reve_r_subop_add;
                 idecode.rs1_valid  = 1;
                 idecode.rd_written = 1;
                 idecode.rs1        = riscv_abi_zero; // x0
             }
             case riscv_opcc1_lui: { // lui rd, imm (imm==0 reserved)
                 idecode.illegal    = 0;
-                idecode.op         = riscv_op_lui;
+                idecode.op         = reve_r_op_lui;
                 idecode.rd_written = 1;
-                idecode.subop      = riscv_subop_add;
+                idecode.subop      = reve_r_subop_add;
                 if (instruction.data[5;7]==2) { // ADDI16SP = addi x2, x2, imm
-                    idecode.op         = riscv_op_alu;
+                    idecode.op         = reve_r_op_alu;
                     idecode.rs1_valid  = 1;
                     idecode.rd_written = 1;
                     idecode.rd         = riscv_abi_sp; // x2
@@ -337,49 +337,49 @@ Note that custom opcodes are available
             }
             case riscv_opcc1_arith: { // SRLI/SRAI/ANDI / SUB/XOR/OR/AND reg reg
                 idecode.illegal = 0;
-                idecode.op     = riscv_op_alu;
-                idecode.subop  = riscv_subop_and;
+                idecode.op     = reve_r_op_alu;
+                idecode.subop  = reve_r_subop_and;
                 idecode.rs1_valid = 1;
                 idecode.rs2_valid = 0;
                 idecode.rd_written = 1;
                 full_switch (instruction.data[2;10])
                 {
                 case 2b00: { // srli rd', rd', amt
-                    idecode.subop  = riscv_subop_srla;
-                    idecode.shift_op = riscv_shift_op_right_logical_zeros;
+                    idecode.subop  = reve_r_subop_srla;
+                    idecode.shift_op = reve_r_shift_op_right_logical_zeros;
                     idecode.rs2_valid = 0;
                 }
                 case 2b01: { // srai rd', rd', amt
-                    idecode.subop  = riscv_subop_srla;
-                    idecode.shift_op = riscv_shift_op_right_arithmetic;
+                    idecode.subop  = reve_r_subop_srla;
+                    idecode.shift_op = reve_r_shift_op_right_arithmetic;
                     idecode.rs2_valid = 0;
                 }
                 case 2b10: { // andi rd', rd', imm
-                    idecode.subop  = riscv_subop_and;
+                    idecode.subop  = reve_r_subop_and;
                     idecode.rs2_valid = 0;
                 }
                 case 2b11: { // sub/xor/or/and rd', rd', rs2'
                     if (instruction.data[12]) { idecode.illegal=1; } // reserved if i[12] is 1
-                    idecode.subop  = riscv_subop_and;
+                    idecode.subop  = reve_r_subop_and;
                     idecode.rs2_valid = 1;
                     full_switch (instruction.data[2;5]) {
-                    case 2b00: { idecode.subop  = riscv_subop_sub; }
-                    case 2b01: { idecode.subop  = riscv_subop_xor; }
-                    case 2b10: { idecode.subop  = riscv_subop_or;  }
-                    case 2b11: { idecode.subop  = riscv_subop_and; }
+                    case 2b00: { idecode.subop  = reve_r_subop_sub; }
+                    case 2b01: { idecode.subop  = reve_r_subop_xor; }
+                    case 2b10: { idecode.subop  = reve_r_subop_or;  }
+                    case 2b11: { idecode.subop  = reve_r_subop_and; }
                     }
                 }
                 }
             }
             case riscv_opcc1_j: { // jal x0, offset
                 idecode.illegal = 0;
-                idecode.op = riscv_op_jal;
+                idecode.op = reve_r_op_jal;
                 idecode.rd_written = 0;
             }
             case riscv_opcc1_beqz: { // beq rs1', x0, offset
                 idecode.illegal    = 0;
-                idecode.op         = riscv_op_branch;
-                idecode.subop      = riscv_subop_beq;
+                idecode.op         = reve_r_op_branch;
+                idecode.subop      = reve_r_subop_beq;
                 idecode.rs1_valid  = 1;
                 idecode.rs2_valid  = 1;
                 idecode.rs2        = riscv_abi_zero; // x0
@@ -387,8 +387,8 @@ Note that custom opcodes are available
             }
             case riscv_opcc1_bnez: { // bne rs1', x0, offset
                 idecode.illegal    = 0;
-                idecode.op         = riscv_op_branch;
-                idecode.subop      = riscv_subop_bne;
+                idecode.op         = reve_r_op_branch;
+                idecode.subop      = reve_r_subop_bne;
                 idecode.rs1_valid  = 1;
                 idecode.rs2_valid  = 1;
                 idecode.rs2        = riscv_abi_zero; // x0
@@ -411,23 +411,23 @@ Note that custom opcodes are available
             case riscv_opcc2_misc_alu: { // j[al]r/mv/add (ebreak)
                 idecode.illegal = 0;
                 if (combs.rs2==0) {
-                    idecode.op = riscv_op_jalr;
+                    idecode.op = reve_r_op_jalr;
                     idecode.rs1_valid = 1;
                     idecode.rs2_valid = 0; // actually kills forwarding, but rs2==0 => it will use zero anyway
                     idecode.rd_written = 1;
                     if (instruction.data[12]) { // ebreak (if rs1==0) / jalr = jalr x1, rs1, x0
                         idecode.rd  = riscv_abi_link;
                         if (combs.rs1==0) { // == combs.rd_q12
-                            idecode.op = riscv_op_system;
-                            idecode.subop = riscv_subop_ebreak;
+                            idecode.op = reve_r_op_system;
+                            idecode.subop = reve_r_subop_ebreak;
                             idecode.rd_written = 0;
                         }
                     } else { // jr (rs1==0 reserved) = jalr x0, rs1, x0
                         idecode.rd = riscv_abi_zero; // will kill the rd_written automatically, hence is really jr
                     }
                 } else { // mv rd, rs2 or add rd, rs1, rs2
-                    idecode.op     = riscv_op_alu;
-                    idecode.subop  = riscv_subop_add;
+                    idecode.op     = reve_r_op_alu;
+                    idecode.subop  = reve_r_subop_add;
                     idecode.rs1_valid = 1;
                     idecode.rs2_valid = 1;
                     idecode.rd_written = 1;
@@ -438,17 +438,17 @@ Note that custom opcodes are available
             }
             case riscv_opcc2_slli: { // slli rd, rd, amt
                 idecode.illegal = 0;
-                idecode.op     = riscv_op_alu;
-                idecode.subop  = riscv_subop_sll;
-                idecode.shift_op = riscv_shift_op_left_logical_zeros;
+                idecode.op     = reve_r_op_alu;
+                idecode.subop  = reve_r_subop_sll;
+                idecode.shift_op = reve_r_shift_op_left_logical_zeros;
                 idecode.rs1_valid = 1;
                 idecode.rs2_valid = 0;
                 idecode.rd_written = 1;
             }
             case riscv_opcc2_lwsp: { // lw rd, ofs(x2) (rd==0 reserved)
                 idecode.illegal = 0;
-                idecode.op = riscv_op_mem;
-                idecode.subop = riscv_subop_lw;
+                idecode.op = reve_r_op_mem;
+                idecode.subop = reve_r_subop_lw;
                 idecode.rs1 = riscv_abi_sp; // x2
                 idecode.rs1_valid = 1;
                 idecode.rs2_valid = 0;
@@ -456,8 +456,8 @@ Note that custom opcodes are available
             }
             case riscv_opcc2_swsp: { // sw rs2, ofs(x2)
                 idecode.illegal = 0;
-                idecode.op = riscv_op_mem;
-                idecode.subop = riscv_subop_sw;
+                idecode.op = reve_r_op_mem;
+                idecode.subop = reve_r_subop_sw;
                 idecode.rs1 = riscv_abi_sp; // x2
                 idecode.rs1_valid = 1;
                 idecode.rs2_valid = 1;

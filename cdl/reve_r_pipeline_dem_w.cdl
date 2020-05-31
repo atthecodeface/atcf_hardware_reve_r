@@ -1,0 +1,298 @@
+/** @copyright (C) 2016-2020,  Gavin J Stark.  All rights reserved.
+ *
+ * @copyright
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *     http://www.apache.org/licenses/LICENSE-2.0.
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ *
+ * @file   riscv_minimal.cdl
+ * @brief  Minimal RISC-V implementation ported to CDL
+ *
+ * CDL implementation of minimal RISC-V teaching implementation
+ *
+ * This is a two-stage pipeline implementation, with instruction fetch
+ * of the next PC occuring simultaneously with the decode, register
+ * read, ALU, data read/write request, data read memory access, and
+ * register update.
+ *
+ * The instruction memory request, then, becomes valid dependent on
+ * the decode of the registered instruction last fetched. For most
+ * branches this requires only a small amount of logic, but for
+ * jump-and-link-register instructions (which uses the full ALU
+ * result) this may take a considerable amount of gates to determine
+ * the correct branch target and hence next instruction fetch.  Hence
+ * the instruction memory request is valid after a considerable delay
+ * from the start of the cycle.
+ *
+ * The return value from the instruction memory request must be valid
+ * before the end of the cycle.
+ *
+ * Any instruction memory implementation must start its access well
+ * after the CPU clock edge, , as the request is valid after the CPU
+ * clock edge; the resultant read data delay (from the clock edge)
+ * then has to be factored in to determine when the next CPU clock
+ * edge can occur. Hence it may be sensible to use a double speed
+ * clock (e.g. 'fast_clk') to generate CPU clock edges (every other
+ * fast_clk edge) and SRAM access clock edges (for a synchronous
+ * memory) on the intervening fast_clk edges.
+ *
+ * The data memory request becomes valid, again, a fair time after the
+ * CPU clock edge, as it requires instruction decode, register fetch,
+ * and ALU operation to occur prior to the memory address being valid.
+ *
+ * The data memory response must be valid (for read data!) in the same
+ * CPU cycle, as the returning data has to be rotated to the correct
+ * byte lanes and prepared for the register file write.
+ *
+ * Hence a data memory implementation can be similar to that proposed
+ * for the instruction memory - that is, accesses start on a memory
+ * clock edge that is in the middle of a CPU clock edge, by using a
+ * fast_clk.
+ *
+ */
+
+/*a Includes
+ */
+include "reve_r.h" // for config
+include "reve_r_dmem.h"         // for dmem response
+include "reve_r_coprocessor.h"  // for coprocessor response
+include "reve_r_pipeline_types.h"  // for pipeline control, response, fetch_data
+include "pipeline_submodules.h" // for idecode, alu, dmem etc
+include "exec.h"
+
+/*a Types
+ */
+/*t t_decexecrfw_state */
+typedef struct {
+    bit[32]          pc            "PC of fetched instruction";
+    t_reve_r_mode     mode;
+    t_reve_r_inst instruction   "Fetched instruction, ready for decode, register fetch, execute and writeback";
+    bit valid                      "Asserted if @instr_data is a valid fetched instruction, whether misaligned or not";
+} t_decexecrfw_state;
+
+/*t t_decexecrfw_combs
+ *
+ * Combinatorials of the decexecrfw_state
+ */
+typedef struct {
+    t_reve_r_decode idecode;
+
+    bit[32]   rs1;
+    bit[32]   rs2;
+
+    bit exec_committed;
+    bit[32] rfw_write_data;
+    t_dmem_exec dmem_exec;
+} t_decexecrfw_combs;
+
+/*a Module
+ */
+module reve_r_pipeline_dem_w( clock clk,
+                              input bit reset_n,
+                              input  t_reve_r_pipeline_control     pipeline_control,
+                              output t_reve_r_pipeline_response    pipeline_response,
+                              input  t_reve_r_pipeline_fetch_data  pipeline_fetch_data,
+                              input  t_reve_r_coproc_response     coproc_response,
+                              input  bit[32]                      csr_read_data,
+                              input  t_reve_r_dmem_access_resp    dmem_access_resp,
+                              input  t_reve_r_config              riscv_config
+    )
+"""
+This is just the processor pipeline, using a single stage for execution.
+
+The instruction fetch request for the next cycle is put out just after
+the ALU stage logic, which may be a long time into the cycle; the
+fetch data response presents the instruction fetched at the end of the
+cycle, where it is registered for execution.
+
+The pipeline is then a single stage that takes the fetched
+instruction, decodes, fetches register values, and executes the ALU
+stage; determining in half a cycle the next instruction fetch, and in
+the whole cycle the data memory request, which is valid just before
+the end
+
+A coprocessor is supported; this may be configured to be disabled, in
+which case the outputs are driven low and the inputs are coprocessor
+response is ignored.
+
+A coprocessor can implement, for example, the multiply for i32m (using
+riscv_i32_muldiv).  Note that since there is not a separate decode
+stage the multiply cannot support fused operations
+
+"""
+{
+
+    /*b State and comb
+     */
+    default clock clk;
+    default reset active_low reset_n;
+
+    clocked bit[32][32] registers={*=0} "Register 0 is tied to 0 - so it is written on every cycle to zero...";
+
+    net     t_reve_r_decode     decexecrfw_idecode_i32  "Decode of instruction including debug";
+    net     t_reve_r_decode     decexecrfw_idecode_i32c "Decode of including using RV32C";
+    clocked t_decexecrfw_state  decexecrfw_state={*=0};
+    comb    t_decexecrfw_combs  decexecrfw_combs;
+    net     t_dmem_request      decexecrfw_dmem_request "Data memory request data";
+    net     bit[32]             decexecrfw_dmem_read_data;
+    net     t_alu_result        decexecrfw_alu_result;
+    clocked t_reve_r_pipeline_response_rfw rfw_state={*=0};
+
+    /*b Decode, RFR, execute and RFW stage - single stage execution
+     */
+    decode_rfr_execute_stage """
+    The decode/RFR/execute stage performs all of the hard workin the
+    implementation.
+
+    It first incorporates a program counter (PC) and an instruction
+    register (IR). The instruction in the IR corresponds to that
+    PC. Initially (at reset) the IR will not be valid, as an
+    instruction must first be fetched, so there is a corresponding
+    valid bit too.
+
+    The IR is decoded as both a RV32C (16-bit) and RV32 (32-bit) in
+    parallel; the bottom two bits of the instruction register indicate
+    which is valid for the IR.
+
+    """: {
+        /*b Instruction register - note all PC value are legal (bit 0 is cleared automatically though) */
+        decexecrfw_state.valid <= 0;
+        if (pipeline_fetch_data.valid && !pipeline_control.flush.fetch) {
+            decexecrfw_state.mode <= pipeline_fetch_data.mode;
+            decexecrfw_state.pc <= pipeline_fetch_data.pc;
+            decexecrfw_state.instruction <= pipeline_fetch_data.instruction;
+            if (rv_cfg_debug_force_disable || !riscv_config.debug_enable) {
+                decexecrfw_state.instruction.debug <= {*=0};
+            }
+            decexecrfw_state.valid <= 1;
+        }
+
+        /*b Decode instruction */
+        reve_r_i32_decode decode_i32( instruction  <= decexecrfw_state.instruction,
+                                     idecode      => decexecrfw_idecode_i32,
+                                     riscv_config <= riscv_config );
+
+        reve_r_i32c_decode decode_i32c( instruction <= decexecrfw_state.instruction,
+                                       idecode      => decexecrfw_idecode_i32c,
+                                       riscv_config <= riscv_config );
+
+        /*b Select decode (from either i32 or i32c or possible debug) */
+        decexecrfw_combs.idecode = decexecrfw_idecode_i32;
+        if ((!rv_cfg_i32c_force_disable) && riscv_config.i32c) {
+            if (rv_cfg_debug_force_disable || !riscv_config.debug_enable || !decexecrfw_state.instruction.debug.valid) {
+                if (decexecrfw_state.instruction.data[2;0]!=2b11) {
+                    decexecrfw_combs.idecode = decexecrfw_idecode_i32c;
+                }
+            }
+        }
+
+        /*b Determine whether to commit to execute */
+        decexecrfw_combs.exec_committed = decexecrfw_state.valid;
+        if (decexecrfw_combs.idecode.illegal) {
+            decexecrfw_combs.exec_committed = 0;
+        }
+
+        /*b Register read - post decode, prior to ALU and CSR accesss */
+        decexecrfw_combs.rs1 = registers[decexecrfw_combs.idecode.rs1]; // note that register 0 is ALWAYS 0 anyway
+        decexecrfw_combs.rs2 = registers[decexecrfw_combs.idecode.rs2]; // note that register 0 is ALWAYS 0 anyway
+
+        /*b Execute ALU stage - post register read, parallel with CSR access */
+        reve_r_alu alu( idecode <= decexecrfw_combs.idecode,
+                           pc  <= decexecrfw_state.pc,
+                           rs1 <= decexecrfw_combs.rs1,
+                           rs2 <= decexecrfw_combs.rs2,
+                           alu_result => decexecrfw_alu_result );
+
+        /*b Memory access handling - post ALU - must be valid before middle of cycle */
+        decexecrfw_combs.dmem_exec = { valid          = decexecrfw_state.valid,
+                                       idecode        = decexecrfw_combs.idecode,
+                                       arith_result   = decexecrfw_alu_result.arith_result, // address of access
+                                       rs2            = decexecrfw_combs.rs2,    // data for access (before rotation)
+                                       first_cycle = 1,
+                                       mode           = decexecrfw_state.mode // can use dec_state as pipeline is always in that mode
+        };
+        reve_r_dmem_request dmem_req( dmem_exec    <= decexecrfw_combs.dmem_exec,
+                                         dmem_request => decexecrfw_dmem_request );
+        // should use illegal dmem access for trap
+        // should use 'needs second cycle'
+
+        /*b Pipeline response from decode */
+        // possible add in valid and illegal (if valid && illegal then pipeline will flush)
+        pipeline_response.decode.valid          = decexecrfw_state.valid;
+        pipeline_response.decode.pc             = decexecrfw_state.pc;
+        pipeline_response.decode.idecode        = decexecrfw_combs.idecode;
+        pipeline_response.decode.branch_target  = 0; // used only if predict_branch - i.e. never in this pipeline
+        pipeline_response.decode.enable_branch_prediction = 0; // Disable branch prediction as we always use exec control flow
+
+        /*b Pipeline response from exec */
+        pipeline_response.exec.valid           = decexecrfw_state.valid;
+        pipeline_response.exec.first_cycle     = 1;
+        pipeline_response.exec.last_cycle      = 1;
+        pipeline_response.exec.interrupt_block = 0;
+        pipeline_response.exec.idecode         = decexecrfw_combs.idecode;
+        pipeline_response.exec.pc              = decexecrfw_state.pc;
+        pipeline_response.exec.pc_if_mispredicted = decexecrfw_alu_result.branch_target; // must be correct for jal(r) and branch
+        pipeline_response.exec.instruction        = decexecrfw_state.instruction;
+        pipeline_response.exec.predicted_branch   = 0;
+        pipeline_response.exec.rs1                = decexecrfw_combs.rs1;
+        pipeline_response.exec.rs2                = decexecrfw_combs.rs2;
+        pipeline_response.exec.dmem_access_req    = decexecrfw_dmem_request.access;
+        pipeline_response.exec.csr_access         = decexecrfw_alu_result.csr_access;
+        pipeline_response.exec.cannot_start       = 0;
+        pipeline_response.exec.branch_condition_met = decexecrfw_alu_result.branch_condition_met;
+
+        /*b Pipeline response from memory */
+        pipeline_response.mem.valid  = decexecrfw_state.valid;
+        pipeline_response.mem.pc     = decexecrfw_state.pc;
+        pipeline_response.mem.addr   = decexecrfw_dmem_request.access.address;
+        pipeline_response.mem.access_in_progress  = decexecrfw_state.valid && decexecrfw_dmem_request.access.valid;
+
+        /*b Pipeline response from rfw */
+
+        pipeline_response.rfw = rfw_state;
+
+        pipeline_response.pipeline_empty = !decexecrfw_state.valid;
+
+        /*b Memory read handling - post memory request and memory read - so way late in the second half of the cycle */
+        reve_r_dmem_read_data dmem_data( dmem_request <= decexecrfw_dmem_request,
+                                            last_data <= 0, // only for unaligned reads
+                                            dmem_access_resp <= dmem_access_resp,
+                                            dmem_read_data => decexecrfw_dmem_read_data);
+
+        /*b Register write - post memory read
+         */
+        decexecrfw_combs.rfw_write_data = decexecrfw_alu_result.result | coproc_response.result;
+        if (rv_cfg_coproc_force_disable || riscv_config.coproc_disable) {
+            decexecrfw_combs.rfw_write_data = decexecrfw_alu_result.result;
+        }
+        if (decexecrfw_dmem_request.reading) {
+            decexecrfw_combs.rfw_write_data =  decexecrfw_dmem_read_data;
+        }
+        if (decexecrfw_combs.idecode.csr_access.access != reve_r_csr_access_none) {
+            decexecrfw_combs.rfw_write_data = csr_read_data;
+        }
+        if (decexecrfw_combs.exec_committed && decexecrfw_combs.idecode.rd_written && !pipeline_control.flush.exec) {
+            registers[decexecrfw_combs.idecode.rd] <= decexecrfw_combs.rfw_write_data;
+        }
+        registers[0] <= 0; // register 0 is always zero...
+        if (rv_cfg_e32_force_enable) {
+            for (i;16) {
+                registers[i+16] <= 0; // reduced register set for e mode
+            }
+        }
+
+        rfw_state.valid      <= decexecrfw_combs.exec_committed && !pipeline_control.flush.exec;
+        rfw_state.rd_written <= decexecrfw_combs.exec_committed && decexecrfw_combs.idecode.rd_written;
+        rfw_state.rd         <= decexecrfw_combs.idecode.rd;
+        rfw_state.data       <= decexecrfw_combs.rfw_write_data;
+    }
+
+    /*b All done */
+}
+

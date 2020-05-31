@@ -59,9 +59,9 @@
 
 /*a Includes
  */
-include "reve_r_internal_types.h"
 include "reve_r.h"
-include "reve_r_submodules.h"
+include "reve_r_pipeline_types.h"  // for pipeline control, response, fetch_data
+include "reve_r_debug.h" // for debug_mst/tgt
 
 /*a Constants
  */
@@ -119,10 +119,10 @@ typedef struct {
     bit attention;
     bit hit_breakpoint;
     bit[16] arg;
-    t_riscv_debug_resp resp "Response from a requested op - only one op should be requested for each response";
-    t_riscv_word data0      "Data from a completed transaction; 0 otherwise";
+    t_reve_r_debug_resp resp "Response from a requested op - only one op should be requested for each response";
+    bit[32] data0      "Data from a completed transaction; 0 otherwise";
     bit instruction_debug_valid "Asserted if instructino debug is valid (should only happen when halted";
-    t_riscv_i32_inst_debug_op instruction_debug_op;
+    t_reve_r_inst_debug_op instruction_debug_op;
     bit[6] rv_select;
     bit waiting_for_read_write;
     bit read_write_completed;
@@ -144,7 +144,7 @@ typedef struct {
  */
 typedef struct {
     bit debug_disabled;
-    t_riscv_pipeline_control_fetch_action fetch_action;
+    t_reve_r_pipeline_control_fetch_action fetch_action;
     bit interrupt_req;
     bit[4] interrupt_number;
 } t_ifetch_combs;
@@ -166,7 +166,7 @@ typedef fsm {
  */
 typedef struct {
     t_ifetch_fsm state;
-    t_riscv_mode    mode;
+    t_reve_r_mode    mode;
     bit[32]      pc    "PC to start fetching from";
     bit instruction_debug_valid  "Copy in riscv_clk domain so it may be used by ifetch";
     bit waiting_for_read_write   "Copy in riscv_clk domain so it may be used by ifetch";
@@ -179,16 +179,15 @@ module reve_r_pipeline_control( clock clk,
                                    clock riscv_clk "Clk gated by riscv_clk_enable - provide for single clock gate outside the module",
                                    input bit reset_n,
                                    input bit                           riscv_clk_enable   "Clock enable for the RISC-V core",
-                                   input t_riscv_csrs                  csrs,
-                                   output t_riscv_pipeline_state       pipeline_state,
-                                   input t_riscv_pipeline_response     pipeline_response,
-                                   input t_riscv_pipeline_fetch_data   pipeline_fetch_data,
-                                   input t_riscv_pipeline_control      pipeline_control,
-                                   input  t_riscv_config               riscv_config,
-                                   input t_riscv_i32_trace             trace,
+                                   input t_reve_r_csrs                  csrs,
+                                   output t_reve_r_pipeline_state       pipeline_state,
+                                   input t_reve_r_pipeline_response     pipeline_response,
+                                   input t_reve_r_pipeline_fetch_data   pipeline_fetch_data,
+                                   input t_reve_r_pipeline_control      pipeline_control,
+                                   input  t_reve_r_config               riscv_config,
 
-                                   input  t_riscv_debug_mst               debug_mst,
-                                   output t_riscv_debug_tgt               debug_tgt,
+                                   input  t_reve_r_debug_mst               debug_mst,
+                                   output t_reve_r_debug_tgt               debug_tgt,
 
                                    input bit[6] rv_select
 )

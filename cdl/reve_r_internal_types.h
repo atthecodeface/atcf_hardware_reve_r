@@ -664,62 +664,6 @@ typedef struct {
     bit[32] dscratch1;
 } t_riscv_csrs;
 
-/*a I32 types */
-/*t t_riscv_i32_inst_debug_op
- */
-typedef enum[2] {
-    rv_inst_debug_op_read_reg,
-    rv_inst_debug_op_write_reg
-} t_riscv_i32_inst_debug_op;
-
-/*t t_riscv_i32_inst_debug
- */
-typedef struct {
-    bit valid;
-    t_riscv_i32_inst_debug_op debug_op;
-    bit[16]                   data     "For reading/writing a register, this is the register number";
-} t_riscv_i32_inst_debug;
-
-/*t t_riscv_i32_inst
- */
-typedef struct {
-    t_riscv_mode mode;
-    bit[32]      data;
-    t_riscv_i32_inst_debug debug;
-} t_riscv_i32_inst;
-
-/*t t_riscv_i32_decode_ext
- *
- * A type that can be used to create an extended RISC-V, returned as part of the decode
- *
- */
-typedef struct {
-    bit dummy; // not used, but the struct must not be empty
-} t_riscv_i32_decode_ext;
-
-/*t t_riscv_i32_decode
- * Decoded i32 instruction, used throughout a pipeline (decode onwards)
- */
-typedef struct {
-    bit[5]       rs1                   "Source register 1 that is required by the instruction";
-    bit          rs1_valid             "Asserted if rs1 is valid; if deasserted then rs1 is not used - only used for blocking in pipelines";
-    bit[5]       rs2                   "Source register 2 that is required by the instruction";
-    bit          rs2_valid             "Asserted if rs2 is valid; if deasserted then rs2 is not used - only used for blocking in pipelines";
-    bit[5]       rd                    "Destination register that is written by the instruction";
-    bit          rd_written            "Asserted if Rd is written to (hence also Rd will be non-zero)";
-    t_riscv_csr_access     csr_access  "CSR access if valid and legal";
-    bit[32]      immediate             "Immediate value decoded from the instruction";
-    bit[5]       immediate_shift       "Immediate shift value decoded from the instruction";
-    bit          immediate_valid       "Asserted if immediate data is valid and therefore to be used instead of source register 2";
-    t_riscv_op     op                  "Operation class of the instruction";
-    t_riscv_subop  subop               "Subclass of the operation class";
-    t_riscv_shift_op shift_op          "Only valid for shift operations (i.e. ignored if op is not alu and subop is not a shift)";
-    bit[7]         funct7              "Options for subop only to be used by custom instructions (so it can be optimized out)";
-    bit           illegal              "asserted if an illegal opcode";
-    bit           is_compressed        "asserted if from an i32-c decode, clear otherwise (effects link register)";
-    t_riscv_i32_decode_ext ext         "extended decode, not used by the main pipeline";
-} t_riscv_i32_decode;
-
 /*t t_riscv_i32_alu_result
  *
  * Result of i32 ALU operation
@@ -731,53 +675,4 @@ typedef struct {
     t_riscv_word branch_target;
     t_riscv_csr_access csr_access;
 } t_riscv_i32_alu_result;
-
-/*t t_riscv_i32_coproc_controls
- */
-typedef struct {
-    bit                     dec_idecode_valid "Mid-cycle: validates dec_idecode";
-    t_riscv_i32_decode      dec_idecode "Mid-cycle: Idecode for the next cycle";
-    bit                     dec_to_alu_blocked "Late in the cycle: if set, ALU will not take decode; note that ALU flush overpowers this";
-    t_riscv_word            alu_rs1     "Early in cycle (after some muxes)";
-    t_riscv_word            alu_rs2     "Early in cycle (after some muxes)";
-    bit                     alu_flush_pipeline "Late in cycle: If asserted, flush everything prior to alu; will only be asserted during a cycle if first cycle if ALU instruction - or if alu_cannot_start";
-    bit                     alu_cannot_start "Late in cycle: If asserted, alu_idecode may be valid but rs1/rs2 are not; once deasserted it remains deasserted until a new ALU instruction starts";
-    bit                     alu_data_not_ready   "Early in cycle (independent of coprocessors): If asserted, alu_idecode may be valid but rs1/rs2 are not; once deasserted it remains deasserted until a new ALU instruction starts";
-    bit                     alu_cannot_complete "Late in cycle: If asserted, alu cannot complete because it is still working on its operation";
-} t_riscv_i32_coproc_controls;
-
-/*t t_riscv_i32_coproc_response
- */
-typedef struct {
-    bit          cannot_start "If asserted, block start of the ALU stage - the instruction is then tried again in the next cycle, but can be interrupted";
-    t_riscv_word result;
-    bit          result_valid "Early in cycle, if asserted then coproc overcomes the ALU result";
-    bit          cannot_complete "Early in cycle: if deasserted the module is performing a calculation that has not produced a valid result yet (feeds back in to controls alu_cannot_complete)";
-} t_riscv_i32_coproc_response;
-
-/*a Dmem access */
-/*t t_riscv_i32_dmem_exec */
-typedef struct {
-    bit                     valid;
-    t_riscv_mode            mode;
-    t_riscv_i32_decode      idecode "Exec stage idecode";
-    t_riscv_word            arith_result;
-    t_riscv_word            rs2;
-    bit                     first_cycle;
-} t_riscv_i32_dmem_exec;
-
-/*t t_riscv_i32_dmem_request */
-typedef struct {
-    t_riscv_mem_access_req access;
-    bit load_address_misaligned  "Asserted only for valid instructions, for loads not aligned to the alignment of the access";
-    bit store_address_misaligned "Asserted only for valid instructions, for stores not aligned to the alignment of the access";
-    bit    reading;
-    bit[2] read_data_rotation;
-    bit[4] read_data_byte_clear;
-    bit[4] read_data_byte_enable;
-    bit    sign_extend_byte;
-    bit    sign_extend_half;
-    bit    multicycle;
-} t_riscv_i32_dmem_request;
-
 

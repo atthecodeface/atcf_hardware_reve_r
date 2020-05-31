@@ -1,4 +1,4 @@
-/** @copyright (C) 2016-2017,  Gavin J Stark.  All rights reserved.
+/** @copyright (C) 2016-2020,  Gavin J Stark.  All rights reserved.
  *
  * @copyright
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,9 +24,9 @@ include "reve_r_internal_types.h"
 
 /*a Modules
  */
-/*m riscv_i32_decode  */
+/*m reve_r_i32_decode  */
 extern
-module riscv_i32_decode( input t_riscv_i32_inst instruction,
+module reve_r_i32_decode( input t_riscv_i32_inst instruction,
                          output t_riscv_i32_decode idecode,
                          input  t_riscv_config          riscv_config
 )
@@ -35,9 +35,9 @@ module riscv_i32_decode( input t_riscv_i32_inst instruction,
     timing comb output idecode;
 }
 
-/*m riscv_i32c_decode  */
+/*m reve_r_i32c_decode  */
 extern
-module riscv_i32c_decode( input t_riscv_i32_inst instruction,
+module reve_r_i32c_decode( input t_riscv_i32_inst instruction,
                           output t_riscv_i32_decode idecode,
                           input  t_riscv_config          riscv_config
 )
@@ -46,31 +46,9 @@ module riscv_i32c_decode( input t_riscv_i32_inst instruction,
     timing comb output idecode;
 }
 
-/*m riscv_e32_decode  */
+/*m reve_r_alu  */
 extern
-module riscv_e32_decode( input t_riscv_i32_inst    instruction,
-                         output t_riscv_i32_decode idecode,
-                         input  t_riscv_config     riscv_config
-)
-{
-    timing comb input instruction, riscv_config;
-    timing comb output idecode;
-}
-
-/*m riscv_e32c_decode  */
-extern
-module riscv_e32c_decode( input t_riscv_i32_inst    instruction,
-                          output t_riscv_i32_decode idecode,
-                          input  t_riscv_config     riscv_config
-)
-{
-    timing comb input instruction, riscv_config;
-    timing comb output idecode;
-}
-
-/*m riscv_i32_alu  */
-extern
-module riscv_i32_alu( input t_riscv_i32_decode      idecode,
+module reve_r_alu( input t_riscv_i32_decode      idecode,
                       input t_riscv_word            pc,
                       input t_riscv_word            rs1,
                       input t_riscv_word            rs2,
@@ -81,8 +59,8 @@ module riscv_i32_alu( input t_riscv_i32_decode      idecode,
     timing comb output alu_result;
 }
 
-/*m riscv_i32_dmem_request */
-extern module riscv_i32_dmem_request( input  t_riscv_i32_dmem_exec     dmem_exec,
+/*m reve_r_dmem_request */
+extern module reve_r_dmem_request( input  t_riscv_i32_dmem_exec     dmem_exec,
                                       output t_riscv_i32_dmem_request  dmem_request
     )
 {
@@ -90,8 +68,8 @@ extern module riscv_i32_dmem_request( input  t_riscv_i32_dmem_exec     dmem_exec
     timing comb output dmem_request;
 }
 
-/*m riscv_i32_dmem_read_data */
-extern module riscv_i32_dmem_read_data( input t_riscv_i32_dmem_request dmem_request,
+/*m reve_r_dmem_read_data */
+extern module reve_r_dmem_read_data( input t_riscv_i32_dmem_request dmem_request,
                                  input t_riscv_word             last_data,
                                  input t_riscv_mem_access_resp  dmem_access_resp,
                                  output t_riscv_word            dmem_read_data
@@ -101,8 +79,8 @@ extern module riscv_i32_dmem_read_data( input t_riscv_i32_dmem_request dmem_requ
     timing comb output dmem_read_data;
 }
 
-/*m riscv_i32_muldiv */
-extern module riscv_i32_muldiv( clock clk,
+/*m reve_r_muldiv */
+extern module reve_r_muldiv( clock clk,
                          input bit reset_n,
                          input t_riscv_i32_coproc_controls  coproc_controls,
                          output t_riscv_i32_coproc_response coproc_response,
@@ -112,12 +90,3 @@ extern module riscv_i32_muldiv( clock clk,
     timing to   rising clock clk coproc_controls, riscv_config;
     timing from rising clock clk coproc_response;
 }
-/*m riscv_csrs_decode  */
-extern
-module riscv_csrs_decode( input t_riscv_csr_access csr_access,
-                          output t_riscv_csr_decode csr_decode )
-{
-    timing comb input csr_access;
-    timing comb output csr_decode;
-}
-

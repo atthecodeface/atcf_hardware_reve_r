@@ -59,16 +59,17 @@
 
 /*a Includes
  */
-include "cpu/riscv/riscv_pipeline_types.h"
-include "cpu/riscv/riscv_internal_types.h"
+include "reve_r.h"
+include "reve_r_fetch.h"           // for fetch request
+include "reve_r_pipeline_types.h"  // for pipeline control, response, fetch_data
 
 /*a Module
  */
-module riscv_i32_pipeline_control_fetch_data( input t_riscv_pipeline_state       pipeline_state,
-                                              input  t_riscv_fetch_req           ifetch_req,
-                                              input  t_riscv_fetch_resp          ifetch_resp,
-                                              input t_riscv_pipeline_fetch_req   pipeline_fetch_req,
-                                              output t_riscv_pipeline_fetch_data pipeline_fetch_data
+module reve_r_pipeline_control_fetch_data( input t_reve_r_pipeline_state       pipeline_state,
+                                              input  t_reve_r_fetch_req           ifetch_req,
+                                              input  t_reve_r_fetch_resp          ifetch_resp,
+                                              input t_reve_r_pipeline_fetch_req   pipeline_fetch_req,
+                                              output t_reve_r_pipeline_fetch_data pipeline_fetch_data
 )
 {
     /*b Pipeline control

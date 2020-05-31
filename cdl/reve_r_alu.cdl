@@ -22,7 +22,8 @@
 /*a Includes
  */
 include "reve_r.h"
-include "reve_r_internal_types.h"
+include "reve_r_decode.h"
+include "exec.h"
 
 /*a Types
  */
@@ -62,8 +63,8 @@ typedef struct {
 
 /*t t_alu_combs */
 typedef struct {
-    t_riscv_word  imm_or_rs2;
-    t_riscv_word  imm_or_rs1;
+    bit[32]  imm_or_rs2;
+    bit[32]  imm_or_rs1;
     bit[32] arith_in_0;
     bit[32] arith_in_1;
     bit     arith_carry_in;
@@ -73,19 +74,19 @@ typedef struct {
     bit     arith_eq;
     bit     arith_unsigned_ge;
     bit     arith_signed_ge;
-    t_riscv_word  pc_plus_4;
-    t_riscv_word  pc_plus_2;
-    t_riscv_word  pc_plus_inst;
-    t_riscv_word  pc_plus_imm;
+    bit[32]  pc_plus_4;
+    bit[32]  pc_plus_2;
+    bit[32]  pc_plus_inst;
+    bit[32]  pc_plus_imm;
 } t_alu_combs;
 
 /*a Module
  */
-module reve_r_alu( input t_riscv_i32_decode      idecode,
-                   input t_riscv_word            pc,
-                   input t_riscv_word            rs1,
-                   input t_riscv_word            rs2,
-                   output t_riscv_i32_alu_result alu_result
+module reve_r_alu( input t_reve_r_decode      idecode,
+                   input bit[32]            pc,
+                   input bit[32]            rs1,
+                   input bit[32]            rs2,
+                   output t_alu_result alu_result
 )
 """
 
@@ -117,49 +118,46 @@ module reve_r_alu( input t_riscv_i32_decode      idecode,
           rotate right/left is rotate
           reverse is reverse output
 
-constant integer rv_cfg_i32_bitmap_enhanced_shift_enable=0;
-constant integer rv_cfg_i32_bitmap_others_enable=0;
-
          */
         part_switch (idecode.shift_op) {
-        case riscv_shift_op_left_logical_zeros:   {
+        case reve_r_shift_op_left_logical_zeros:   {
             shift_combs.and_mask_type = mask_type_normal;
             shift_combs.or_mask_type  = mask_type_none;
         }
-        case riscv_shift_op_right_logical_zeros:   {
+        case reve_r_shift_op_right_logical_zeros:   {
             shift_combs.and_mask_type = mask_type_invert;
             shift_combs.or_mask_type  = mask_type_none;
         }
-        case riscv_shift_op_right_arithmetic:   {
+        case reve_r_shift_op_right_arithmetic:   {
             shift_combs.and_mask_type = mask_type_invert;
             shift_combs.or_mask_type  = rs1[31] ? mask_type_normal : mask_type_none;
         }
-        case riscv_shift_op_left_logical_ones:   {
+        case reve_r_shift_op_left_logical_ones:   {
             if (rv_cfg_i32_bitmap_enhanced_shift_enable) {
                 shift_combs.and_mask_type = mask_type_normal;
                 shift_combs.or_mask_type  = mask_type_invert;
             }
         }
-        case riscv_shift_op_right_logical_ones:   {
+        case reve_r_shift_op_right_logical_ones:   {
             if (rv_cfg_i32_bitmap_enhanced_shift_enable) {
                 shift_combs.and_mask_type = mask_type_invert;
                 shift_combs.or_mask_type  = mask_type_normal;
             }
         }
-        case riscv_shift_op_left_rotate, riscv_shift_op_right_rotate, riscv_shift_op_reverse: {
+        case reve_r_shift_op_left_rotate, reve_r_shift_op_right_rotate, reve_r_shift_op_reverse: {
             if (rv_cfg_i32_bitmap_enhanced_shift_enable) {
                 shift_combs.and_mask_type = mask_type_none;
                 shift_combs.or_mask_type  = mask_type_none;
             }
         }
-        case riscv_shift_op_bit_insert:   {
+        case reve_r_shift_op_bit_insert:   {
             if (rv_cfg_i32_bitmap_enhanced_shift_enable) {
                 shift_combs.and_mask_type = mask_type_normal;
                 shift_combs.bb_mask_type  = bb_mask_type_bit;
                 shift_combs.or_mask_type  = mask_type_rs2;
             }
         }
-        case riscv_shift_op_byte_insert:   {
+        case reve_r_shift_op_byte_insert:   {
             if (rv_cfg_i32_bitmap_enhanced_shift_enable) {
                 shift_combs.and_mask_type = mask_type_normal;
                 shift_combs.bb_mask_type  = bb_mask_type_byte;
@@ -175,7 +173,7 @@ constant integer rv_cfg_i32_bitmap_others_enable=0;
 
         shift_combs.shift_amount = shift_combs.shift_control;
         // shift_left must not be set for bit/byte/halfword reverse
-        if (!(idecode.shift_op & riscv_shift_op_mask_right)) {
+        if (!(idecode.shift_op & reve_r_shift_op_mask_right)) {
             shift_combs.shift_amount = (~shift_combs.shift_control)+1;
         }
 
@@ -242,7 +240,7 @@ constant integer rv_cfg_i32_bitmap_others_enable=0;
 
         shift_combs.shift_result = (shift_combs.rotate_out[32;0] & shift_combs.shift_and_mask) | shift_combs.shift_or_mask;
         if (rv_cfg_i32_bitmap_enhanced_shift_enable) {
-            if (idecode.shift_op==riscv_shift_op_reverse) {
+            if (idecode.shift_op==reve_r_shift_op_reverse) {
                 shift_combs.shift_result = shift_combs.rotate_bit_reverse;
             }
         }
@@ -262,18 +260,18 @@ constant integer rv_cfg_i32_bitmap_others_enable=0;
         alu_combs.arith_in_0 = rs1;
         alu_combs.arith_in_1 = alu_combs.imm_or_rs2;
         alu_combs.arith_carry_in = 0;
-        if ((idecode.subop == riscv_subop_sub) |
-            (idecode.subop == riscv_subop_slt) |
-            (idecode.subop == riscv_subop_sltu)) {
+        if ((idecode.subop == reve_r_subop_sub) |
+            (idecode.subop == reve_r_subop_slt) |
+            (idecode.subop == reve_r_subop_sltu)) {
             alu_combs.arith_in_1     = ~alu_combs.imm_or_rs2;
             alu_combs.arith_carry_in = 1;
         }
-        if (idecode.op == riscv_op_branch) {
+        if (idecode.op == reve_r_op_branch) {
             alu_combs.arith_in_1     = ~rs2;
             alu_combs.arith_carry_in = 1;
         }
-        if ((idecode.op == riscv_op_jalr) ||
-            (idecode.op == riscv_op_mem)) {
+        if ((idecode.op == reve_r_op_jalr) ||
+            (idecode.op == reve_r_op_mem)) {
             alu_combs.arith_in_1     = idecode.immediate;
             alu_combs.arith_carry_in = 0;
         }
@@ -295,12 +293,12 @@ constant integer rv_cfg_i32_bitmap_others_enable=0;
         /*b Determine branch condition met */
         alu_result.branch_condition_met = 0;
         part_switch (idecode.subop) {
-        case riscv_subop_beq:  {alu_result.branch_condition_met = alu_combs.arith_eq;}
-        case riscv_subop_bne:  {alu_result.branch_condition_met = !alu_combs.arith_eq;}
-        case riscv_subop_bgeu: {alu_result.branch_condition_met = alu_combs.arith_unsigned_ge;}
-        case riscv_subop_bltu: {alu_result.branch_condition_met = !alu_combs.arith_unsigned_ge;}
-        case riscv_subop_bge:  {alu_result.branch_condition_met = alu_combs.arith_signed_ge;}
-        case riscv_subop_blt:  {alu_result.branch_condition_met = !alu_combs.arith_signed_ge;}
+        case reve_r_subop_beq:  {alu_result.branch_condition_met = alu_combs.arith_eq;}
+        case reve_r_subop_bne:  {alu_result.branch_condition_met = !alu_combs.arith_eq;}
+        case reve_r_subop_bgeu: {alu_result.branch_condition_met = alu_combs.arith_unsigned_ge;}
+        case reve_r_subop_bltu: {alu_result.branch_condition_met = !alu_combs.arith_unsigned_ge;}
+        case reve_r_subop_bge:  {alu_result.branch_condition_met = alu_combs.arith_signed_ge;}
+        case reve_r_subop_blt:  {alu_result.branch_condition_met = !alu_combs.arith_signed_ge;}
         }
 
         /*b Determine branch condition met */
@@ -311,25 +309,25 @@ constant integer rv_cfg_i32_bitmap_others_enable=0;
         alu_result.arith_result = alu_combs.arith_result[32;0];
         alu_result.result       = alu_combs.arith_result[32;0];
         part_switch (idecode.subop) {
-        case riscv_subop_add:   { alu_result.result = alu_combs.arith_result[32;0]; }
-        case riscv_subop_sub:   { alu_result.result = alu_combs.arith_result[32;0]; }
-        case riscv_subop_slt:   { alu_result.result = alu_combs.arith_signed_ge   ? 0:1; }
-        case riscv_subop_sltu:  { alu_result.result = alu_combs.arith_unsigned_ge ? 0:1; }
-        case riscv_subop_xor:   { alu_result.result = rs1 ^ alu_combs.imm_or_rs2;}
-        case riscv_subop_or:    { alu_result.result = rs1 | alu_combs.imm_or_rs2;}
-        case riscv_subop_and:   { alu_result.result = rs1 & alu_combs.imm_or_rs2;}
-        case riscv_subop_sll:   { alu_result.result = shift_combs.shift_result[32;0];}
-        case riscv_subop_srla:  { alu_result.result = shift_combs.shift_result[32;0];}
+        case reve_r_subop_add:   { alu_result.result = alu_combs.arith_result[32;0]; }
+        case reve_r_subop_sub:   { alu_result.result = alu_combs.arith_result[32;0]; }
+        case reve_r_subop_slt:   { alu_result.result = alu_combs.arith_signed_ge   ? 0:1; }
+        case reve_r_subop_sltu:  { alu_result.result = alu_combs.arith_unsigned_ge ? 0:1; }
+        case reve_r_subop_xor:   { alu_result.result = rs1 ^ alu_combs.imm_or_rs2;}
+        case reve_r_subop_or:    { alu_result.result = rs1 | alu_combs.imm_or_rs2;}
+        case reve_r_subop_and:   { alu_result.result = rs1 & alu_combs.imm_or_rs2;}
+        case reve_r_subop_sll:   { alu_result.result = shift_combs.shift_result[32;0];}
+        case reve_r_subop_srla:  { alu_result.result = shift_combs.shift_result[32;0];}
         }
         part_switch (idecode.op) {
-        case riscv_op_lui:      { alu_result.result = idecode.immediate;}
-        case riscv_op_auipc:    { alu_result.result = alu_combs.pc_plus_imm;}
-        case riscv_op_jal:      { alu_result.result = alu_combs.pc_plus_inst; } // jal  stores pc+2/4 ready for return in register
-        case riscv_op_jalr:     { alu_result.result = alu_combs.pc_plus_inst; } // jalr stores pc+2/4 ready for return in register
+        case reve_r_op_lui:      { alu_result.result = idecode.immediate;}
+        case reve_r_op_auipc:    { alu_result.result = alu_combs.pc_plus_imm;}
+        case reve_r_op_jal:      { alu_result.result = alu_combs.pc_plus_inst; } // jal  stores pc+2/4 ready for return in register
+        case reve_r_op_jalr:     { alu_result.result = alu_combs.pc_plus_inst; } // jalr stores pc+2/4 ready for return in register
         }
         alu_result.branch_target = alu_combs.pc_plus_imm;
         part_switch (idecode.op) {
-        case riscv_op_jalr:     { alu_result.branch_target = bundle(alu_combs.arith_result[31;1],1b0); }
+        case reve_r_op_jalr:     { alu_result.branch_target = bundle(alu_combs.arith_result[31;1],1b0); }
         }
 
         /*b CSR access write data*/

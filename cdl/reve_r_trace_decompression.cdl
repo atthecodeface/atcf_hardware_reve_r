@@ -36,7 +36,7 @@ typedef struct {
 /*a Module
  */
 module reve_r_trace_decompression( input bit[64] compressed_nybbles "Nybbles from compressed trace",
-                                      output t_riscv_i32_decompressed_trace decompressed_trace "Decompressed trace",
+                                      output t_reve_r_decompressed_trace decompressed_trace "Decompressed trace",
                                       output bit[5] nybbles_consumed "number of nybbles (from bit 0) consumed by current decompression"
 )
 """

@@ -30,7 +30,7 @@ typedef struct {
     bit enabled;
     bit pc_required;
     bit[3] data_nybble "Nybble at which data nybbles will start in compressed stream, if required";
-    t_riscv_i32_compressed_trace compressed;
+    t_reve_r_compressed_trace compressed;
 } t_trace_state;
 
 /*t t_trace_combs */
@@ -45,8 +45,8 @@ typedef struct {
 
 /*a Module
  */
-module reve_r_trace_compression( input t_riscv_i32_packed_trace  packed_trace "Packed trace",
-                                    output t_riscv_i32_compressed_trace compressed_trace "Compressed trace"
+module reve_r_trace_compression( input t_reve_r_packed_trace  packed_trace "Packed trace",
+                                 output t_reve_r_compressed_trace compressed_trace "Compressed trace"
 )
 """
 Compression of a packed trace

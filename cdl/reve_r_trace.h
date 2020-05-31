@@ -12,10 +12,10 @@
  *   limitations under the License.
  *
  * @file   reve_r_trace.h
- * @brief  Header file for Reve-R trace types
+ * @brief  Header file for Reve-R trace types and modules
  *
  */
-/*a Includes */
+
 include "reve_r.h"
 
 /*a Types */
@@ -24,7 +24,7 @@ include "reve_r.h"
 typedef struct {
     // Following are valid at commit stage of pipeline
     bit                instr_valid;
-    t_riscv_mode       mode          "Mode of instruction";
+    t_reve_r_mode       mode          "Mode of instruction";
     bit[32]            instr_pc      "Program counter of the instruction";
     bit[32]            instruction   "Instruction word being decoded - without debug";
     bit                branch_taken  "Asserted if a branch is being taken";
@@ -139,4 +139,52 @@ typedef struct {
     bit[4]             bkpt_reason;
 } t_reve_r_decompressed_trace;
 
+/*a Modules */
+/*m reve_r_trace  */
+extern
+module reve_r_trace( clock clk            "Clock for the CPU",
+                     input bit reset_n     "Active low reset",
+                     input bit riscv_clk_enable,
+                     input t_reve_r_trace trace "Trace signals"
+)
+{
+    timing to   rising clock clk riscv_clk_enable;
+    timing to rising clock clk trace;
+}
+
+/*m reve_r_trace_pack - */
+extern module reve_r_trace_pack( clock clk            "Free-running clock",
+                                 input bit reset_n     "Active low reset",
+                                 input t_reve_r_packed_trace_control trace_control      "Control of trace",
+                                 input t_reve_r_trace trace "Trace signals",
+                                 output t_reve_r_packed_trace packed_trace "Packed trace"
+)
+{
+    timing to   rising clock clk trace_control, trace;
+    timing from rising clock clk packed_trace;
+}
+
+/*m reve_r_trace_compression - combinatorially compress a packed_trace (register on input and output) */
+extern module reve_r_trace_compression( input t_reve_r_packed_trace packed_trace      "Control of trace",
+                                        output t_reve_r_compressed_trace compressed_trace "Compressed trace"
+)
+"""
+The compressed trace is a stream of nybbles, up to 16 nybbles per packed trace, with a number of valid nybbles.
+A compressed trace can be forwarded as 64 bits (ignoring the number of valid nybbles) - the other nybbles will be zeros.
+Or a stream of valid nybbles can be produced (by concatenating valid nybbles from successive compressed traces).
+"""
+{
+    timing comb input packed_trace;
+    timing comb output compressed_trace;
+}
+
+/*m reve_r_trace_decompression - combintorially decompress a packed trace (register on input and output) */
+extern module reve_r_trace_decompression( input bit[64] compressed_nybbles "Nybbles from compressed trace",
+                                          output t_reve_r_decompressed_trace decompressed_trace "Decompressed trace",
+                                          output bit[5] nybbles_consumed "number of nybbles (from bit 0) consumed by current decompression"
+)
+{
+    timing comb input compressed_nybbles;
+    timing comb output decompressed_trace, nybbles_consumed;
+}
 

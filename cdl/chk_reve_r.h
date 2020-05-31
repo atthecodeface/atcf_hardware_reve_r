@@ -17,13 +17,14 @@
  */
 
 /*a Includes */
-include "cpu/riscv/riscv.h"
+include "reve_r_fetch.h"
+include "reve_r_trace.h"
 
 /*a Risc-V instruction checkers */
-/*m chk_riscv_ifetch */
-extern module chk_riscv_ifetch( clock clk,
-                                input t_riscv_fetch_req  fetch_req,
-                                input t_riscv_fetch_resp fetch_resp,
+/*m chk_reve_r_ifetch */
+extern module chk_reve_r_ifetch( clock clk,
+                                input t_reve_r_fetch_req  fetch_req,
+                                input t_reve_r_fetch_resp fetch_resp,
                                 output bit error_detected,
                                 output bit[32] cycle )
 {
@@ -31,9 +32,9 @@ extern module chk_riscv_ifetch( clock clk,
     timing from rising clock clk error_detected, cycle;
 }
 
-/*m chk_riscv_trace */
-extern module chk_riscv_trace( clock clk,
-                               input t_riscv_i32_trace trace,
+/*m chk_reve_r_trace */
+extern module chk_reve_r_trace( clock clk,
+                               input t_reve_r_trace trace,
                                 output bit error_detected,
                                 output bit[32] cycle )
 {

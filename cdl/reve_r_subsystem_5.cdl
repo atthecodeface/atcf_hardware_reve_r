@@ -18,14 +18,17 @@
 
 /*a Includes
  */
-include "srams.h"
-include "types/apb.h"
-include "apb/apb_targets.h"
-include "cpu/riscv/riscv.h"
-include "cpu/riscv/riscv_modules.h"
-include "cpu/riscv/riscv_pipeline.h"
-include "cpu/riscv/riscv_submodules.h"
-include "cpu/riscv/chk_riscv.h"
+include "apb::apb.h"
+include "std::srams.h"
+include "utils::sram_access.h"
+include "reve_r.h"
+include "reve_r_pipeline_types.h"  // for pipeline control, response, fetch_data
+include "reve_r_debug.h" // for debug_mst/tgt
+include "reve_r_pipeline_control_modules.h"
+include "reve_r_pipelines.h"
+include "reve_r_coprocessor.h"
+include "reve_r_csr.h"
+include "chk_reve_r.h"
 
 /*a Types */
 /*t t_drop_data */
@@ -73,7 +76,7 @@ typedef struct {
 
 /*t t_data_state */
 typedef struct {
-    t_riscv_mem_access_req dmem_access_in_progress;
+    t_reve_r_dmem_access_req dmem_access_in_progress;
     t_apb_request apb;
 } t_data_state;
 
@@ -86,20 +89,20 @@ typedef struct {
 
 /*a Module
  */
-module riscv_i32_minimal3( clock clk,
+module reve_r_subsystem_5( clock clk,
                            input bit reset_n,
                            input bit proc_reset_n,
-                           input t_riscv_irqs       irqs               "Interrupts in to the CPU",
+                           input t_reve_r_irqs       irqs               "Interrupts in to the CPU",
                            input  t_sram_access_req       sram_access_req,
                            output t_sram_access_resp      sram_access_resp,
-                           output t_riscv_mem_access_req  data_access_req,
-                           input  t_riscv_mem_access_resp data_access_resp,
+                           output t_reve_r_dmem_access_req  data_access_req,
+                           input  t_reve_r_dmem_access_resp data_access_resp,
                            output t_apb_request           apb_request,
                            input  t_apb_response          apb_response,
-                           input  t_riscv_debug_mst       debug_mst,
-                           output t_riscv_debug_tgt       debug_tgt,
-                           input  t_riscv_config          riscv_config,
-                           output t_riscv_i32_trace       trace
+                           input  t_reve_r_debug_mst       debug_mst,
+                           output t_reve_r_debug_tgt       debug_tgt,
+                           input  t_reve_r_config          riscv_config,
+                           output t_reve_r_trace       trace
 )
 """
 An instantiation of Reve-R with multiplier coprocessor and debug, with a single SRAM
@@ -119,27 +122,27 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
 
     /*b Nets
      */
-    net   t_riscv_debug_tgt debug_tgt;
-    net   t_riscv_i32_trace       trace;
+    net   t_reve_r_debug_tgt debug_tgt;
+    net   t_reve_r_trace       trace;
 
-    net  t_riscv_mem_access_req  dmem_access_req;
-    comb t_riscv_mem_access_resp dmem_access_resp;
+    net  t_reve_r_dmem_access_req  dmem_access_req;
+    comb t_reve_r_dmem_access_resp dmem_access_resp;
 
-    net  t_riscv_fetch_req  rv_imem_access_req;
-    comb t_riscv_fetch_resp rv_imem_access_resp;
-    net t_riscv_csr_controls      csr_controls;
-    net t_riscv_csr_data          csr_data;
-    net t_riscv_csr_access        csr_access;
-    net t_riscv_csrs              csrs;
+    net  t_reve_r_fetch_req  rv_imem_access_req;
+    comb t_reve_r_fetch_resp rv_imem_access_resp;
+    net t_reve_r_csr_controls      csr_controls;
+    net t_reve_r_csr_data          csr_data;
+    net t_reve_r_csr_access        csr_access;
+    net t_reve_r_csrs              csrs;
 
     /*b Nets for the pipeline
      */
-    net t_riscv_pipeline_state        pipeline_state;
-    net t_riscv_pipeline_control      pipeline_control;
-    net t_riscv_pipeline_response     pipeline_response;
-    net t_riscv_pipeline_fetch_req    pipeline_fetch_req;
-    net t_riscv_pipeline_fetch_data   pipeline_fetch_data;
-    net t_riscv_pipeline_trap_request pipeline_trap_request;
+    net t_reve_r_pipeline_state        pipeline_state;
+    net t_reve_r_pipeline_control      pipeline_control;
+    net t_reve_r_pipeline_response     pipeline_response;
+    net t_reve_r_pipeline_fetch_req    pipeline_fetch_req;
+    net t_reve_r_pipeline_fetch_data   pipeline_fetch_data;
+    net t_reve_r_pipeline_trap_request pipeline_trap_request;
 
     /*b State and comb
      */
@@ -150,10 +153,10 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
     comb    t_arbiter_combs arbiter_combs;
     net bit[32] sram_read_data;
 
-    net t_riscv_i32_coproc_controls  coproc_controls;
-    net t_riscv_i32_coproc_response  coproc_response;
-    net t_riscv_i32_coproc_response  pipeline_coproc_response;
-    clocked t_riscv_mem_access_req  data_access_req = {*=0} "Access for non-APB, non-SRAM";
+    net t_reve_r_coproc_controls  coproc_controls;
+    net t_reve_r_coproc_response  coproc_response;
+    net t_reve_r_coproc_response  pipeline_coproc_response;
+    clocked t_reve_r_dmem_access_req  data_access_req = {*=0} "Access for non-APB, non-SRAM";
 
     /*b SRAM and arbiter */
     sram_and_arbiter: {
@@ -299,7 +302,7 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
         data_access_req <= {*=0};
         data_combs.apb_request_valid       = 0;
         data_combs.sram_request.valid      = 0;
-        data_combs.sram_request.read_not_write = (dmem_access_req.req_type != rv_mem_access_write);
+        data_combs.sram_request.read_not_write = (dmem_access_req.req_type != rv_dmem_access_write);
         data_combs.sram_request.address        = dmem_access_req.address;
         data_combs.sram_request.byte_enable    = dmem_access_req.byte_enable;
         data_combs.sram_request.write_data     = dmem_access_req.write_data;
@@ -356,7 +359,7 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
                 data_state.dmem_access_in_progress <= dmem_access_req;
                 if (data_combs.apb_request_valid) {
                     data_state.apb.psel    <= 1;
-                    data_state.apb.pwrite  <= (dmem_access_req.req_type == rv_mem_access_write);
+                    data_state.apb.pwrite  <= (dmem_access_req.req_type == rv_dmem_access_write);
                     data_state.apb.pwdata  <= dmem_access_req.write_data;
                     data_state.apb.paddr   <= dmem_access_req.address;
                 }
@@ -372,7 +375,7 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
     /*b Instantiate Reve-R pipeline
      */
     reve_r_pipeline: {
-        riscv_i32_pipeline_control pc(clk       <- clk,
+        reve_r_pipeline_control pc(clk       <- clk,
                                       riscv_clk <- clk,
                                       reset_n          <= reset_n,
                                       riscv_clk_enable <= 1,
@@ -387,25 +390,25 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
                                       debug_tgt        => debug_tgt,
                                       rv_select <= 0 );
 
-        riscv_i32_pipeline_control_fetch_req pc_fetch_req( pipeline_state <= pipeline_state,
+        reve_r_pipeline_control_fetch_req pc_fetch_req( pipeline_state <= pipeline_state,
                                                            pipeline_response <= pipeline_response,
                                                            pipeline_fetch_req => pipeline_fetch_req,
                                                            ifetch_req => rv_imem_access_req );
 
-        riscv_i32_pipeline_control_fetch_data pc_fetch_data( pipeline_state <= pipeline_state,
+        reve_r_pipeline_control_fetch_data pc_fetch_data( pipeline_state <= pipeline_state,
                                                              ifetch_req  <= rv_imem_access_req,
                                                              ifetch_resp <= rv_imem_access_resp,
                                                              pipeline_fetch_req <= pipeline_fetch_req,
                                                              pipeline_fetch_data => pipeline_fetch_data );
 
-        riscv_i32_pipeline_trap_interposer ti( pipeline_state         <= pipeline_state,
+        reve_r_pipeline_trap_interposer ti( pipeline_state         <= pipeline_state,
                                                pipeline_response      <= pipeline_response,
                                                dmem_access_resp       <= dmem_access_resp,
                                                pipeline_trap_request  => pipeline_trap_request,
                                                riscv_config           <= riscv_config
         );
 
-        riscv_i32_pipeline_control_flow cf( pipeline_state <= pipeline_state,
+        reve_r_pipeline_control_flow cf( pipeline_state <= pipeline_state,
                                             ifetch_req  <= rv_imem_access_req,
                                             pipeline_response <= pipeline_response,
                                             pipeline_trap_request  <= pipeline_trap_request,
@@ -421,7 +424,7 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
                                             riscv_config <= riscv_config
         );
 
-        riscv_i32c_pipeline3 pipe( clk <- clk,
+        reve_r_pipeline_d_e_m_w pipe( clk <- clk,
                                   reset_n <= reset_n,
                                   pipeline_control <= pipeline_control,
                                   pipeline_response => pipeline_response,
@@ -436,7 +439,7 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
     /*b CSRs
      */
     csr_instance: {
-        riscv_csrs_machine_debug_user_irq csrs( clk       <- clk,
+        reve_r_csrs csrs( clk       <- clk,
                                                 riscv_clk <- clk,
                                                 reset_n <= reset_n,
                                                 riscv_clk_enable <= 1,
@@ -451,7 +454,7 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
     /*b Coprocessors
      */
     coprocessors: {
-        riscv_i32_muldiv m( clk <- clk,
+        reve_r_muldiv m( clk <- clk,
                             reset_n <= reset_n,
                             coproc_controls <= coproc_controls,
                             coproc_response => coproc_response,
@@ -462,13 +465,13 @@ Any access outside of the bottom 1MB is passed as a request out of this module.
     /*b Checkers - for matching trace etc
      */
     checkers: {
-        chk_riscv_ifetch checker_ifetch( clk <- clk,
+        chk_reve_r_ifetch checker_ifetch( clk <- clk,
                                          fetch_req <= rv_imem_access_req,
                                          fetch_resp <= rv_imem_access_resp
                                          //error_detected =>,
                                          //cycle => ,
             );
-        chk_riscv_trace checker_trace( clk <- clk,
+        chk_reve_r_trace checker_trace( clk <- clk,
                                        trace <= trace
                                          //error_detected =>,
                                          //cycle => ,

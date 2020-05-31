@@ -3,12 +3,13 @@
 constant integer rv_cfg_i32c_force_disable=0;
 constant integer rv_cfg_e32_force_enable=0;
 constant integer rv_cfg_i32m_force_disable=0;
+constant integer rv_cfg_i32m_fuse_force_disable=0;
 constant integer rv_cfg_i32_bitmap_enhanced_shift_enable=1;
 constant integer rv_cfg_i32_bitmap_others_enable=1;
-constant integer rv_cfg_i32_custom0_enable=1;
+constant integer rv_cfg_i32_custom0_enable=0;
 constant integer rv_cfg_i32_custom0_as_load=1;
 constant integer rv_cfg_i32_custom0_as_store=0;
-constant integer rv_cfg_i32_custom1_enable=1;
+constant integer rv_cfg_i32_custom1_enable=0;
 constant integer rv_cfg_i32_custom1_as_load=1;
 constant integer rv_cfg_i32_custom1_as_store=0;
 constant integer rv_cfg_i32_custom2_enable=0;
@@ -40,4 +41,4 @@ typedef struct {
     bit[32] mvendorid "ORred with constant";
     bit[32] marchid   "ORred with constant";
     bit[32] mimpid    "ORred with constant";
-} t_riscv_csr_access_custom;
+} t_reve_r_csr_access_custom;

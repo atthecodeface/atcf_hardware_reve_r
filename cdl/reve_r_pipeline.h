@@ -1,4 +1,4 @@
-/** @copyright (C) 2016-2018,  Gavin J Stark.  All rights reserved.
+/** @copyright (C) 2016-2020,  Gavin J Stark.  All rights reserved.
  *
  * @copyright
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,16 +17,12 @@
  */
 
 /*a Includes */
-include "types/apb.h"
-include "types/jtag.h"
-include "utils/jtag_modules.h"
-include "cpu/riscv/riscv.h"
-include "cpu/riscv/riscv_internal_types.h"
+include "reve_r.h"
 
 /*a Implementations */
-/*m riscv_i32_pipeline_control
+/*m reve_r_pipeline_control
  */
-extern module riscv_i32_pipeline_control( clock clk,
+extern module reve_r_pipeline_control( clock clk,
                                           clock riscv_clk                             "Clk gated by riscv_clk_enable - provide for single clock gate outside the module",
                                           input bit reset_n,
                                           input bit riscv_clk_enable,
@@ -54,9 +50,9 @@ extern module riscv_i32_pipeline_control( clock clk,
     timing comb output pipeline_state, debug_tgt;
 }
 
-/*m riscv_i32_pipeline_control_fetch_req
+/*m reve_r_pipeline_control_fetch_req
  */
-extern module riscv_i32_pipeline_control_fetch_req( input t_riscv_pipeline_state        pipeline_state,
+extern module reve_r_pipeline_control_fetch_req( input t_riscv_pipeline_state        pipeline_state,
                                                     input t_riscv_pipeline_response     pipeline_response,
                                                     output t_riscv_pipeline_fetch_req   pipeline_fetch_req,
                                                     output t_riscv_fetch_req            ifetch_req
@@ -66,9 +62,9 @@ extern module riscv_i32_pipeline_control_fetch_req( input t_riscv_pipeline_state
     timing comb output ifetch_req, pipeline_fetch_req;
 }
 
-/*m riscv_i32_pipeline_control_fetch_data
+/*m reve_r_pipeline_control_fetch_data
  */
-extern module riscv_i32_pipeline_control_fetch_data( input t_riscv_pipeline_state   pipeline_state,
+extern module reve_r_pipeline_control_fetch_data( input t_riscv_pipeline_state   pipeline_state,
                                                      input t_riscv_fetch_req          ifetch_req,
                                                      input t_riscv_fetch_resp         ifetch_resp,
                                                      input t_riscv_pipeline_fetch_req   pipeline_fetch_req,
@@ -79,9 +75,9 @@ extern module riscv_i32_pipeline_control_fetch_data( input t_riscv_pipeline_stat
     timing comb output pipeline_fetch_data;
 }
 
-/*m riscv_i32_pipeline_trap_interposer
+/*m reve_r_pipeline_trap_interposer
  */
-extern module riscv_i32_pipeline_trap_interposer( input  t_riscv_pipeline_state   pipeline_state,
+extern module reve_r_pipeline_trap_interposer( input  t_riscv_pipeline_state   pipeline_state,
                                            input  t_riscv_pipeline_response       pipeline_response,
                                            input  t_riscv_mem_access_resp         dmem_access_resp,
                                            output t_riscv_pipeline_trap_request   pipeline_trap_request,
@@ -93,9 +89,9 @@ extern module riscv_i32_pipeline_trap_interposer( input  t_riscv_pipeline_state 
     timing comb input riscv_config;
 }
 
-/*m riscv_i32_pipeline_control_flow
+/*m reve_r_pipeline_control_flow
  */
-extern module riscv_i32_pipeline_control_flow( input t_riscv_pipeline_state       pipeline_state,
+extern module reve_r_pipeline_control_flow( input t_riscv_pipeline_state       pipeline_state,
                                                input t_riscv_fetch_req          ifetch_req,
                                                input t_riscv_pipeline_response    pipeline_response,
                                                input  t_riscv_pipeline_trap_request pipeline_trap_request,
@@ -118,10 +114,10 @@ extern module riscv_i32_pipeline_control_flow( input t_riscv_pipeline_state     
     timing comb output coproc_controls, csr_controls, trace;
 }
 
-/*m riscv_i32c_pipeline
+/*m reve_r_pipeline_demw
  */
 extern
-module riscv_i32c_pipeline( clock clk,
+module reve_r_pipeline_demw( clock clk,
                             input bit reset_n,
                             input t_riscv_pipeline_control    pipeline_control,
                             input t_riscv_pipeline_fetch_data  pipeline_fetch_data,
@@ -139,10 +135,10 @@ module riscv_i32c_pipeline( clock clk,
     timing comb output pipeline_response;
 }
 
-/*m riscv_i32c_pipeline3
+/*m reve_r_pipeline_d_e_m_w
  */
 extern
-module riscv_i32c_pipeline3( clock clk,
+module reve_r_pipeline_d_e_m_w( clock clk,
                              input bit reset_n,
                              input t_riscv_pipeline_control     pipeline_control,
                              output t_riscv_pipeline_response   pipeline_response,

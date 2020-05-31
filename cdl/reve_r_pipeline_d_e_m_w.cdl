@@ -43,10 +43,12 @@
 
 /*a Includes
  */
-include "cpu/riscv/riscv_internal_types.h"
-include "cpu/riscv/riscv.h"
-include "cpu/riscv/riscv_submodules.h"
-include "cpu/riscv/riscv_config.h"
+include "reve_r.h" // for config
+include "reve_r_dmem.h"         // for dmem response
+include "reve_r_coprocessor.h"  // for coprocessor response
+include "reve_r_pipeline_types.h"  // for pipeline control, response, fetch_data
+include "pipeline_submodules.h"
+include "exec.h"
 
 /*a Types
  */
@@ -63,8 +65,8 @@ typedef struct {
 /*t t_dec_state */
 typedef struct {
     bit[32] pc                    "PC of instruction";
-    t_riscv_mode     mode         "Mode that the whole pipeline is operating in";
-    t_riscv_i32_inst instruction  "Fetched instruction, ready for decode, register fetch, execute and writeback";
+    t_reve_r_mode     mode         "Mode that the whole pipeline is operating in";
+    t_reve_r_inst instruction  "Fetched instruction, ready for decode, register fetch, execute and writeback";
     bit valid                     "Asserted if @instruction is a valid fetched instruction, whether misaligned or not";
 } t_dec_state;
 
@@ -73,10 +75,10 @@ typedef struct {
  * Combinatorials of the decode state
  */
 typedef struct {
-    t_riscv_i32_decode idecode;
+    t_reve_r_decode idecode;
 
-    t_riscv_word   rs1;
-    t_riscv_word   rs2;
+    bit[32]   rs1;
+    bit[32]   rs2;
 
     bit rs1_from_alu;
     bit rs1_from_mem;
@@ -89,7 +91,7 @@ typedef struct {
 typedef struct {
     bit valid;
     bit first_cycle              "Asserted if first cycle of an instruction execution (so instruction can be interrupted)";
-    t_riscv_i32_decode idecode;
+    t_reve_r_decode idecode;
     bit[32] pc                   "PC of the fetched instruction";
     bit[32] pc_if_mispredicted   "PC of the next instruction if branch prediction is incorrect";
     bit predicted_branch         "Asserted if instruction decode predicted this is a taken branch";
@@ -97,10 +99,10 @@ typedef struct {
     bit rs1_from_mem;
     bit rs2_from_alu;
     bit rs2_from_mem;
-    t_riscv_word   rs1;
-    t_riscv_word   rs2;
+    bit[32]   rs1;
+    bit[32]   rs2;
 
-    t_riscv_i32_inst instruction    "Instruction, for trace and illegal instruction trap only";
+    t_reve_r_inst instruction    "Instruction, for trace and illegal instruction trap only";
 } t_alu_state;
 
 /*t t_alu_combs
@@ -110,21 +112,21 @@ typedef struct {
 typedef struct {
     bit valid_legal              "Asserted if @instruction is a valid fetched instruction on a valid alignment";
     bit blocked_by_mem           "Must qualify with valid; asserted if the ALU instruction cannot start because it uses a result of the memory stage";
-    t_riscv_word   rs1;
-    t_riscv_word   rs2;
-    t_riscv_i32_dmem_exec dmem_exec;
-    t_riscv_csr_access csr_access;
-    t_riscv_word result_data;
+    bit[32]   rs1;
+    bit[32]   rs2;
+    t_dmem_exec dmem_exec;
+    t_reve_r_csr_access csr_access;
+    bit[32] result_data;
 } t_alu_combs;
 
 /*t t_mem_state */
 typedef struct {
     bit valid                   "Asserted if the state here is valid";
-    t_riscv_word alu_result     "Result from the last alu stage; this will be combined with memory result to be stored in RF";
+    bit[32] alu_result     "Result from the last alu stage; this will be combined with memory result to be stored in RF";
     bit rd_written              "Asserted if Rd is to be written to (with result of memory or ALU)";
     bit rd_from_mem             "Asserted if Rd is to be written to with result of memory - so a following instruction must wait until this one reaches RFW";
     bit[5] rd                   "Destination register used by the instruction (if valid and rd_written are asserted)";
-    t_riscv_i32_dmem_request dmem_request "Data memory request data";
+    t_dmem_request dmem_request "Data memory request data";
     bit[32] pc                  "PC for reporting aborts, if configured";
 } t_mem_state;
 
@@ -133,13 +135,13 @@ typedef struct {
  * Combinatorials of the memory stage
  */
 typedef struct {
-    t_riscv_word result_data;
+    bit[32] result_data;
 } t_mem_combs;
 
 /*t t_rfw_state */
 typedef struct {
     bit valid                   "Asserted if the state here is valid";
-    t_riscv_word mem_result     "Result from the last mem stage; this was written to the RF (if required) at the same time it was stored here";
+    bit[32] mem_result     "Result from the last mem stage; this was written to the RF (if required) at the same time it was stored here";
     bit rd_written              "Asserted if Rd of the RF was written to";
     bit[5] rd                   "Destination register used by the instruction (if valid and rd_written are asserted)";
 } t_rfw_state;
@@ -148,13 +150,13 @@ typedef struct {
  */
 module reve_r_pipeline_d_e_m_w( clock clk,
                              input bit reset_n,
-                             input  t_riscv_mem_access_resp dmem_access_resp,
-                             input t_riscv_pipeline_control     pipeline_control,
-                             output t_riscv_pipeline_response   pipeline_response,
-                             input t_riscv_pipeline_fetch_data  pipeline_fetch_data,
-                             input t_riscv_i32_coproc_response   coproc_response,
-                             input t_riscv_word                 csr_read_data,
-                             input  t_riscv_config          riscv_config
+                             input  t_reve_r_dmem_access_resp dmem_access_resp,
+                             input t_reve_r_pipeline_control     pipeline_control,
+                             output t_reve_r_pipeline_response   pipeline_response,
+                             input t_reve_r_pipeline_fetch_data  pipeline_fetch_data,
+                             input t_reve_r_coproc_response   coproc_response,
+                             input bit[32]                 csr_read_data,
+                             input  t_reve_r_config          riscv_config
 )
 """
 This is just the processor pipeline, using thress stages for execution.
@@ -213,11 +215,11 @@ An example implementation of could be
     default clock clk;
     default reset active_low reset_n;
 
-    clocked t_riscv_word[32] registers={*=-1} "Register 0 is tied to 0 - so it is written on every cycle to zero...";
+    clocked bit[32][32] registers={*=0} "Register 0 is tied to 0 - so it is written on every cycle to zero...";
 
-    net     t_riscv_i32_decode     idecode_i32  "Decode of instruction including debug";
-    net     t_riscv_i32_decode     idecode_i32c "Decode of including using RV32C";
-    net     t_riscv_i32_alu_result alu_result;
+    net     t_reve_r_decode     idecode_i32  "Decode of instruction including debug";
+    net     t_reve_r_decode     idecode_i32c "Decode of including using RV32C";
+    net     t_alu_result alu_result;
 
     comb t_dec_combs dec_combs;
     comb t_alu_combs alu_combs;
@@ -227,8 +229,8 @@ An example implementation of could be
     clocked t_mem_state     mem_state={*=0};
     clocked t_rfw_state     rfw_state={*=0};
 
-    net t_riscv_i32_dmem_request alu_combs_dmem_request "Data memory request data";
-    net t_riscv_word             mem_combs_dmem_read_data;
+    net t_dmem_request alu_combs_dmem_request "Data memory request data";
+    net bit[32]             mem_combs_dmem_read_data;
 
     /*b Decode, RFR stage
      */
@@ -257,11 +259,11 @@ An example implementation of could be
         }
 
         /*b Decode instruction */
-        riscv_i32_decode decode_i32( instruction <= dec_state.instruction,
+        reve_r_i32_decode decode_i32( instruction <= dec_state.instruction,
                                      idecode     => idecode_i32,
                                      riscv_config      <= riscv_config );
 
-        riscv_i32c_decode decode_i32c( instruction <= dec_state.instruction,
+        reve_r_i32c_decode decode_i32c( instruction <= dec_state.instruction,
                                        idecode      => idecode_i32c,
                                        riscv_config      <= riscv_config );
 
@@ -395,7 +397,7 @@ An example implementation of could be
         }
 
         /*b Execute ALU stage */
-        riscv_i32_alu alu( idecode <= alu_state.idecode,
+        reve_r_alu alu( idecode <= alu_state.idecode,
                            pc  <= alu_state.pc,
                            rs1 <= alu_combs.rs1,
                            rs2 <= alu_combs.rs2,
@@ -409,7 +411,7 @@ An example implementation of could be
         if (coproc_response.result_valid) {
             alu_combs.result_data = coproc_response.result;
         }
-        if (alu_state.idecode.csr_access.access != riscv_csr_access_none) {
+        if (alu_state.idecode.csr_access.access != reve_r_csr_access_none) {
             alu_combs.result_data = csr_read_data;
         }
 
@@ -421,7 +423,7 @@ An example implementation of could be
                                 first_cycle    = alu_state.first_cycle,
                                 mode           = dec_state.mode // can use dec_state as pipeline is always in that mode
         };
-        riscv_i32_dmem_request dmem_req( dmem_exec    <= alu_combs.dmem_exec,
+        reve_r_dmem_request dmem_req( dmem_exec    <= alu_combs.dmem_exec,
                                          dmem_request => alu_combs_dmem_request );
 
         /*b Pipeline response from exec */
@@ -432,7 +434,7 @@ An example implementation of could be
         pipeline_response.exec.idecode            = alu_state.idecode;
         pipeline_response.exec.pc                 = alu_state.pc;
         pipeline_response.exec.pc_if_mispredicted = alu_state.pc_if_mispredicted; // Used for JAL and conditional branch
-        if (alu_state.idecode.op==riscv_op_jalr) { pipeline_response.exec.pc_if_mispredicted = alu_result.branch_target;}
+        if (alu_state.idecode.op==reve_r_op_jalr) { pipeline_response.exec.pc_if_mispredicted = alu_result.branch_target;}
         pipeline_response.exec.instruction        = alu_state.instruction;
         pipeline_response.exec.predicted_branch   = alu_state.predicted_branch;
         pipeline_response.exec.rs1                = alu_combs.rs1;
@@ -481,7 +483,7 @@ An example implementation of could be
         }
 
         /*b Memory read handling */
-        riscv_i32_dmem_read_data dmem_data( dmem_request <= mem_state.dmem_request,
+        reve_r_dmem_read_data dmem_data( dmem_request <= mem_state.dmem_request,
                                             last_data <= mem_state.alu_result, // only for unaligned reads
                                             dmem_access_resp <= dmem_access_resp,
                                             dmem_read_data => mem_combs_dmem_read_data);
